@@ -45,7 +45,7 @@ class TensorboardLogger:
 
     def write_metrics(
             self,
-            metrics: Dict,
+            metrics: List[float],
             metric_names: List[str],
             step: int
     ) -> None:
@@ -59,9 +59,8 @@ class TensorboardLogger:
             metric_names: The names of the metrics to write.
             step: The step at which to write the metrics.
         """
-        for metric in metric_names:
-            value = metrics[metric]
-            self.writer.add_scalar(metric, value, step)
+        for name, metric in zip(metric_names, metrics):
+            self.writer.add_scalar(name, metric, step)
 
         self.writer.flush()
 

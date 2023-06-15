@@ -15,7 +15,7 @@ from utils.tools import load_json
 from utils.resize import resize
 
 
-class TextDetDataset(
+class TextDetEvenOdd(
     ABC,
     Dataset
 ):
@@ -68,7 +68,7 @@ class TextDetDataset(
     def load_sample(
             self,
             idx: int
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    ) -> Tuple[np.ndarray, np.ndarray]:
         """Loads a single sample from the dataset.
 
         Args:
@@ -94,54 +94,64 @@ class TextDetDataset(
         image = self.loader.fast_numpy_load(image_path).astype(np.float32)
         targets = self.loader.fast_numpy_load(targets_path).astype(np.float32)
 
-        shrink_maps, shrink_masks, threshold_maps, threshold_masks = targets
-
-        return image, shrink_maps, shrink_masks, threshold_maps, threshold_masks
+        return image, targets
 
     def __getitem__(self, idx):
+        image, targets = self.load_sample(idx)
 
-        image, shrink_maps, shrink_masks, threshold_maps, threshold_masks = self.load_sample(idx)
+        shrink_maps_even, shrink_masks_even, threshold_maps_even, threshold_masks_even = targets[0]
+        shrink_maps_odd, shrink_masks_odd, threshold_maps_odd, threshold_masks_odd = targets[1]
 
-        # TODO Тут будет ресайз масок после загрузки
+        targets = np.array([shrink_maps_even, shrink_masks_even, threshold_maps_even, threshold_masks_even,
+                            shrink_maps_odd, shrink_masks_odd, threshold_maps_odd, threshold_masks_odd]).transpose(1, 2, 0)
 
-        masks = np.array([shrink_maps, shrink_masks, threshold_maps, threshold_masks]).transpose(1, 2, 0)
-
-        image, masks = resize(
+        image, targets = resize(
             image=image.astype(np.uint8),
-            mask=masks.astype(np.uint8),
+            mask=targets.astype(np.uint8),
             img_size=self.config['train']['image_size'],
             split=self.split.upper()
         )
 
         image = self.pre_transforms(image=image)['image']
         image = image.astype(np.float32)
-        masks = masks.astype(np.float32)
-        shrink_maps, shrink_masks, threshold_maps, threshold_masks = masks.transpose(2, 0, 1)
-        threshold_maps /= 255
+        targets = targets.astype(np.float32)
+
+        targets = targets.transpose(2, 0, 1)
+
+        shrink_maps_even, shrink_masks_even, threshold_maps_even, threshold_masks_even = targets[:4]
+        threshold_maps_even /= 255
+
+        shrink_maps_odd, shrink_masks_odd, threshold_maps_odd, threshold_masks_odd = targets[4:]
+        threshold_maps_odd /= 255
 
         transformed = self.transforms(
             image=image,
-            masks=[shrink_maps, shrink_masks, threshold_maps, threshold_masks]
+            masks=[shrink_maps_even, shrink_masks_even, threshold_maps_even, threshold_masks_even,
+                   shrink_maps_odd, shrink_masks_odd, threshold_maps_odd, threshold_masks_odd]
         )
 
         image = transformed['image']
-        shrink_maps, shrink_masks, threshold_maps, threshold_masks = transformed['masks']
+        targets = transformed['masks']
+        shrink_maps_even, shrink_masks_even, threshold_maps_even, threshold_masks_even = targets[:4]
+        shrink_masks_even = np.full_like(shrink_masks_even, fill_value=1., dtype=shrink_maps_even.dtype)
 
-        shrink_masks = np.full_like(shrink_masks, fill_value=1., dtype=shrink_masks.dtype)
+        shrink_maps_odd, shrink_masks_odd, threshold_maps_odd, threshold_masks_odd = targets[4:]
+        shrink_masks_odd = np.full_like(shrink_masks_odd, fill_value=1., dtype=shrink_maps_odd.dtype)
+
+        even_targets = torch.as_tensor(np.array(
+            [shrink_maps_even, shrink_masks_even, threshold_maps_even, threshold_masks_even]
+        ))
+
+        odd_targets = torch.as_tensor(np.array(
+            [shrink_maps_odd, shrink_masks_odd, threshold_maps_odd, threshold_masks_odd]
+        ))
 
         image = torch.as_tensor(image).permute((2, 0, 1))
-        shrink_maps = torch.as_tensor(shrink_maps)
-        shrink_masks = torch.as_tensor(shrink_masks)
-        threshold_maps = torch.as_tensor(threshold_maps)
-        threshold_masks = torch.as_tensor(threshold_masks)
-
 
         out = dict(
             image=image,
-            shrink_maps=shrink_maps,
-            shrink_masks=shrink_masks,
-            threshold_maps=threshold_maps,
-            threshold_masks=threshold_masks,
+            even_targets=even_targets,
+            odd_targets=odd_targets,
         )
 
         return out

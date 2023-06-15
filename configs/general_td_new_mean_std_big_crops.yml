@@ -1,7 +1,7 @@
 description:
   repo: TD
-  project_name: global
-  experiment_name: new_exp_640_480_size
+  project_name: general_td
+  experiment_name: no_scaller_std_mean_big_crops_2
 
 mlflow: null # если не требуется, то просто убираем этот блок
 #  # exp_name - в таком видео в mlflow будет отображаться эксперимент
@@ -11,45 +11,52 @@ mlflow: null # если не требуется, то просто убирае�
 #  password: EitahsaeghoXooz1Hiev # пароль
 #  run_id: null #6ab6434ddf2d4db494490053535611ea # ID запуска в эксперименте, нужен если хотите сохранить веса во время
   # конвертации в конкретный эксперимент, если null будет выбран последний по дате создания
-tensorboard:  null # если не требуется, то просто убираем этот блок
-#  # Папка куда буду складываться логи тензорборда
-#  log_dir: logs/${description.repo}/${description.project_name}/${description.experiment_name}
-
-logging:
-  image:
-    height: 224
-    width: 224
-  log_images_every_n_epoch: 5
+tensorboard:
+  log_dir: logs/${description.repo}/${description.project_name}/${description.experiment_name}
 
 data:
   datasets:
-    cism:
-      images_folder: /home/addudkin/cism/data/source_data/all_images
-      annotation_folder: /home/addudkin/cism/data
+    pervichka:
+      images_folder: /home/addudkin/clearm_dataset_processing/data/full_text_text_detection/images
+      annotation_folder: /home/addudkin/clearm_dataset_processing/data/full_text_text_detection
       p: 1.0
-  mean: [0.485, 0.456, 0.406]
-  std: [0.229, 0.224, 0.225]
+  sample_name:
+    train: train_annotation.json
+    val: val_annotation.json
+  mean: [0.83908421, 0.88127789, 0.90946536]
+  std: [0.12534873, 0.12586502, 0.1288737 ]
+
 
 data_preprocess:
-  data_folder: /home/addudkin/cism/data/source_data/prepared_data640
+  data_folder: /home/addudkin/clearm_dataset_processing/data/full_text_text_detection/prepared_mask
+  augmentation:
+    OneOf:
+      p: 0.5
+      args:
+        - DirtyDrumTransform:
+            p: 1.0
+        - LightingGradientTransform:
+            p: 1.0
+
 
 train:
   epoch: 1000
-  image_size: [640, 480]
-  batch_size: 16
+  image_size: [1024, 896]
+  batch_size: 14
   workers: 12
   pin_memory: True
   gpu_index: 0
 
 val:
   batch_size: 8
+  image_size: [1024, 896]
 
 checkpoint:
   # Количество отслеживаемых лучших checkpoints для дальнейшего усреднения
   average_top_k: 5
 
 # Имя класса используемого датасета из datasets/__init__.py
-dataset_name: TextDetDataset
+dataset_name: TextDetPervichka
 
 model:
   class_model: DB
@@ -68,6 +75,8 @@ model:
       out_channels: 2
       k: 50
   weights: ""
+
+training_type: &training_type multilabel
 
 loss_function:
   type: DBLoss
@@ -126,23 +135,16 @@ train_transforms:
         - ShiftScaleRotate:
             shift_limit: 0.1
             rotate_limit: 3
-            shift_limit_y: 0.07
-            shift_limit_x: 0.07
+            shift_limit_y: 0.1
+            shift_limit_x: 0.1
             border_mode: 0
             p: 0.3
+  - RandomCrop:
+      p: 1
+      width: 640
+      height: 640
 
-train_pre_transforms:
-    OneOf:
-      p: 0.5
-      args:
-        - DirtyDrumTransform:
-            p: 1.0
-        - LightingGradientTransform:
-            p: 1.0
-        - BadPhotoCopyTransform:
-            p: 1.0
-            noise_iteration: [ 1, 1 ]
-            noise_value: [ 32, 64 ]
+train_pre_transforms: null
 
 val_pre_transforms: null
 

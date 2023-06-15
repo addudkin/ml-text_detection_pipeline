@@ -1,8 +1,16 @@
 description:
   repo: TD
   project_name: global
-  experiment_name: two_lines_one_head_scale_loss_ddp_resnet50_0510_loss
+  experiment_name: log_shrink_classic_thr
 
+mlflow: # если не требуется, то просто убираем этот блок
+  # exp_name - в таком видео в mlflow будет отображаться эксперимент
+  exp_name: ${description.repo}/${description.project_name}/${description.experiment_name}
+  url: https://ml.dbrain.io/ # hostname на котором поднят mlflow сервис
+  username: ds # логин
+  password: EitahsaeghoXooz1Hiev # пароль
+  run_id: null #6ab6434ddf2d4db494490053535611ea # ID запуска в эксперименте, нужен если хотите сохранить веса во время
+  # конвертации в конкретный эксперимент, если null будет выбран последний по дате создания
 tensorboard: # если не требуется, то просто убираем этот блок
   # Папка куда буду складываться логи тензорборда
   log_dir: logs/${description.repo}/${description.project_name}/${description.experiment_name}
@@ -19,17 +27,23 @@ data:
       images_folder: /home/addudkin/cism/data/source_data/all_images
       annotation_folder: /home/addudkin/cism/data
       p: 1.0
+  # bank_doc:
+  #   adapter: banc_doc
+  #   args:
+  #     ann_dir: /mnt/ssd1/DOC_BANC/text/DocBank_500K_txt
+  #     img_dir: /mnt/ssd1/DOC_BANC/full_data/DocBank_500K_ori_img
+  #     in_memory: false
+  #   p: 0.25
   mean: [0.485, 0.456, 0.406]
   std: [0.229, 0.224, 0.225]
 
 train:
   epoch: 1000
-  crop_size: [1024, 1024]
-  batch_size: 1
+  crop_size: [640, 640]
+  batch_size: 8
   workers: 12
   pin_memory: True
-  gpu_index: 0
-  ddp_backend: NCCL # GLOO, MPI, TCP, NCCL
+  gpu_index: 1
 
 val:
   batch_size: 1
@@ -39,12 +53,12 @@ checkpoint:
   average_top_k: 5
 
 # Имя класса используемого датасета из datasets/__init__.py
-dataset_name: MultiTDDatasetTwoLines
+dataset_name: MultiTDDataset
 
 model:
-  class_model: DBCism
+  class_model: DB
   backbone:
-    type: resnet50
+    type: resnet34
     args:
       in_channels: 3
       pretrained: true
@@ -53,29 +67,25 @@ model:
     args:
       inner_channels: 256
   head:
-    type: DBHeadV2
+    type: DBHead
     args:
       out_channels: 2
       k: 50
   weights: ""
 
 loss_function:
-  type: DBLossV2
+  type: DBLoss
   params:
     alpha: 5
     beta: 10
     ohem_ratio: 3
 
 optimizer:
-  # Имя класса
   type: AdamW
-  # Передаваемые параметры
   params:
-    lr: 0.0007
-    betas:
-      - 0.9
-      - 0.999
-    weight_decay: 0.0005
+    lr: 1.0e-3
+    betas: [ 0.9, 0.999 ]
+    weight_decay: 0.0001
 
 scheduler:
   # Имя класса
@@ -112,8 +122,13 @@ train_transforms:
       saturation: 0.5
   - HorizontalFlip:
       p: 0.5
-
-
+  - ShiftScaleRotate:
+      shift_limit: 0.1
+      rotate_limit: 3
+      shift_limit_y: 0.07
+      shift_limit_x: 0.07
+      border_mode: 0
+      p: 1.0
 val_transforms: null
 
 test_transforms: null

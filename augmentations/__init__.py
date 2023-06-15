@@ -74,7 +74,10 @@ def name2factory(name: str) -> A.BasicTransform:
         AttributeError: if the augmentation class is not found.
     """
     try:
-        if name in ['WaveDeform', 'ElasticTransform']:
+        print(name)
+        if name in ['WaveDeform', 'ElasticTransform_',
+                    'DirtyDrumTransform', 'LightingGradientTransform',
+                    'BadPhotoCopyTransform']:
             return getattr(custom_aug, name)
         # Get from albumentations.core and albumentations.augmentation
         return getattr(A, name)

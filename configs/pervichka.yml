@@ -1,7 +1,7 @@
 description:
   repo: TD
-  project_name: global
-  experiment_name: new_exp_640_480_size
+  project_name: pervichka
+  experiment_name: start_from_baseline
 
 mlflow: null # если не требуется, то просто убираем этот блок
 #  # exp_name - в таком видео в mlflow будет отображаться эксперимент
@@ -23,23 +23,36 @@ logging:
 
 data:
   datasets:
-    cism:
-      images_folder: /home/addudkin/cism/data/source_data/all_images
-      annotation_folder: /home/addudkin/cism/data
+    pervichka:
+      images_folder: /home/addudkin/data/text_detection/pervichka/images
+      annotation_folder: /home/addudkin/data/text_detection/pervichka
       p: 1.0
+  sample_name:
+    train: train_annotation.json
+    val: val_annotation.json
   mean: [0.485, 0.456, 0.406]
   std: [0.229, 0.224, 0.225]
 
+
 data_preprocess:
-  data_folder: /home/addudkin/cism/data/source_data/prepared_data640
+  data_folder: /home/addudkin/data/text_detection/pervichka/prepared_mask
+  augmentation:
+    OneOf:
+      p: 0.5
+      args:
+        - DirtyDrumTransform:
+            p: 1.0
+        - LightingGradientTransform:
+            p: 1.0
+
 
 train:
   epoch: 1000
-  image_size: [640, 480]
-  batch_size: 16
+  image_size: [864, 1024]
+  batch_size: 8
   workers: 12
   pin_memory: True
-  gpu_index: 0
+  gpu_index: 1
 
 val:
   batch_size: 8
@@ -49,7 +62,7 @@ checkpoint:
   average_top_k: 5
 
 # Имя класса используемого датасета из datasets/__init__.py
-dataset_name: TextDetDataset
+dataset_name: TextDetPervichka
 
 model:
   class_model: DB
@@ -68,6 +81,8 @@ model:
       out_channels: 2
       k: 50
   weights: ""
+
+training_type: &training_type multilabel
 
 loss_function:
   type: DBLoss
@@ -126,23 +141,16 @@ train_transforms:
         - ShiftScaleRotate:
             shift_limit: 0.1
             rotate_limit: 3
-            shift_limit_y: 0.07
-            shift_limit_x: 0.07
+            shift_limit_y: 0.1
+            shift_limit_x: 0.1
             border_mode: 0
             p: 0.3
+  - RandomCrop:
+      p: 1
+      width: 512
+      height: 512
 
-train_pre_transforms:
-    OneOf:
-      p: 0.5
-      args:
-        - DirtyDrumTransform:
-            p: 1.0
-        - LightingGradientTransform:
-            p: 1.0
-        - BadPhotoCopyTransform:
-            p: 1.0
-            noise_iteration: [ 1, 1 ]
-            noise_value: [ 32, 64 ]
+train_pre_transforms: null
 
 val_pre_transforms: null
 

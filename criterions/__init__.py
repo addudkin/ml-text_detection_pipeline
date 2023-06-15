@@ -1,6 +1,7 @@
 import torch
 
-from criterions.db_loss import DBLoss, DBLossV2
+from criterions.db_loss import DBLoss, DBLossV2, DBLossIntersection
+from criterions.fieldnet_loss import MultiLoss
 
 
 def get_criterion(loss_function: dict) -> torch.nn.Module:
@@ -12,6 +13,9 @@ def get_criterion(loss_function: dict) -> torch.nn.Module:
     Returns:
         torch.nn.Module, the criterion function.
     """
-    criterion = eval(loss_function['type'])(**loss_function['params'])
+    if 'DB' in loss_function['type']:
+        criterion = eval(loss_function['type'])(**loss_function['params'])
+    else:
+        criterion = eval(loss_function['type'])(loss_function['params'])
 
     return criterion

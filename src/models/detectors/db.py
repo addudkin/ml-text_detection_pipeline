@@ -65,6 +65,36 @@ class DBCism(nn.Module):
         return y_even, y_odd
 
 
+class DBCismEvenOddLines(nn.Module):
+    def __init__(self, cfg: DictConfig):
+        """
+        PANnet
+        :param model_config: 模型配置
+        """
+        super().__init__()
+        # model_config = Dict(model_config)
+        backbone_type = cfg.model.backbone.type
+        neck_type = cfg.model.neck.type
+        head_type = cfg.model.head.type
+        self.backbone = build_backbone(backbone_type, **cfg.model.backbone.args)
+        self.neck = build_neck(neck_type, in_channels=self.backbone.out_channels, **cfg.model.neck.args)
+        self.head = build_head(head_type, in_channels=self.neck.out_channels, **cfg.model.head.args)
+        self.name = f'{backbone_type}_{neck_type}_{head_type}'
+
+    def forward(self, x):
+        _, _, H, W = x.size()
+        backbone_out = self.backbone(x)
+        neck_out = self.neck(backbone_out)
+
+        ### Доработка для CISM возвращаем 2 таргета
+        y_even, y_odd = self.head(neck_out)
+
+        y_even = F.interpolate(y_even, size=(H, W), mode='bilinear', align_corners=True)
+        y_odd = F.interpolate(y_odd, size=(H, W), mode='bilinear', align_corners=True)
+
+        return y_even, y_odd
+
+
 if __name__ == '__main__':
     import torch
 

@@ -85,9 +85,9 @@ def shrink_polygon_pyclipper(polygon, shrink_ratio):
     from shapely.geometry import Polygon
     import pyclipper
     polygon_shape = Polygon(polygon)
-    #distance = polygon_shape.area * (1 - np.power(shrink_ratio, 2)) / polygon_shape.length
+    distance = polygon_shape.area * (1 - np.power(shrink_ratio, 2)) / polygon_shape.length
 
-    distance = np.log(polygon_shape.area * (1 - np.power(shrink_ratio, 2)) / polygon_shape.length + 1)
+    #distance = np.log(polygon_shape.area * (1 - np.power(shrink_ratio, 2)) / polygon_shape.length + 1)
     #distance = min((polygon_shape.area) * (1 - np.power(shrink_ratio, 2))/ (polygon_shape.length), np.log(polygon_shape.area + 1))
     subject = [tuple(l) for l in polygon]
     padding = pyclipper.PyclipperOffset()
@@ -135,11 +135,6 @@ class MakeShrinkMap:
                 ignore_tags[i] = True
             else:
                 shrinks = self.shrink_func(polygon, self.shrink_ratio)
-
-                # if shrinked.size == 0:
-                #     cv2.fillPoly(mask, polygon.astype(np.int32)[np.newaxis, :, :], 0)
-                #     ignore_tags[i] = True
-                #     continue
                 for shrinked in shrinks:
                     cv2.fillPoly(gt, [shrinked.astype(np.int32)], 1)
 

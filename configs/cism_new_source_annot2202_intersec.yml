@@ -1,19 +1,19 @@
 description:
   repo: TD
   project_name: global
-  experiment_name: new_exp_640_480_size
+  experiment_name: intersec
 
-mlflow: null # если не требуется, то просто убираем этот блок
-#  # exp_name - в таком видео в mlflow будет отображаться эксперимент
-#  exp_name: ${description.repo}/${description.project_name}/${description.experiment_name}
-#  url: https://ml.dbrain.io/ # hostname на котором поднят mlflow сервис
-#  username: ds # логин
-#  password: EitahsaeghoXooz1Hiev # пароль
-#  run_id: null #6ab6434ddf2d4db494490053535611ea # ID запуска в эксперименте, нужен если хотите сохранить веса во время
+mlflow: # если не требуется, то просто убираем этот блок
+  # exp_name - в таком видео в mlflow будет отображаться эксперимент
+  exp_name: ${description.repo}/${description.project_name}/${description.experiment_name}
+  url: https://ml.dbrain.io/ # hostname на котором поднят mlflow сервис
+  username: ds # логин
+  password: EitahsaeghoXooz1Hiev # пароль
+  run_id: null #6ab6434ddf2d4db494490053535611ea # ID запуска в эксперименте, нужен если хотите сохранить веса во время
   # конвертации в конкретный эксперимент, если null будет выбран последний по дате создания
-tensorboard:  null # если не требуется, то просто убираем этот блок
-#  # Папка куда буду складываться логи тензорборда
-#  log_dir: logs/${description.repo}/${description.project_name}/${description.experiment_name}
+tensorboard: # если не требуется, то просто убираем этот блок
+  # Папка куда буду складываться логи тензорборда
+  log_dir: logs/${description.repo}/${description.project_name}/${description.experiment_name}
 
 logging:
   image:
@@ -27,29 +27,33 @@ data:
       images_folder: /home/addudkin/cism/data/source_data/all_images
       annotation_folder: /home/addudkin/cism/data
       p: 1.0
+  # bank_doc:
+  #   adapter: banc_doc
+  #   args:
+  #     ann_dir: /mnt/ssd1/DOC_BANC/text/DocBank_500K_txt
+  #     img_dir: /mnt/ssd1/DOC_BANC/full_data/DocBank_500K_ori_img
+  #     in_memory: false
+  #   p: 0.25
   mean: [0.485, 0.456, 0.406]
   std: [0.229, 0.224, 0.225]
 
-data_preprocess:
-  data_folder: /home/addudkin/cism/data/source_data/prepared_data640
-
 train:
   epoch: 1000
-  image_size: [640, 480]
-  batch_size: 16
-  workers: 12
+  crop_size: [640, 640]
+  batch_size: 8
+  workers: 8
   pin_memory: True
-  gpu_index: 0
+  gpu_index: 1
 
 val:
-  batch_size: 8
+  batch_size: 1
 
 checkpoint:
   # Количество отслеживаемых лучших checkpoints для дальнейшего усреднения
   average_top_k: 5
 
 # Имя класса используемого датасета из datasets/__init__.py
-dataset_name: TextDetDataset
+dataset_name: MultiTDDataset
 
 model:
   class_model: DB
@@ -63,17 +67,18 @@ model:
     args:
       inner_channels: 256
   head:
-    type: DBHead
+    type: DBHeadIntersection
     args:
       out_channels: 2
       k: 50
   weights: ""
 
 loss_function:
-  type: DBLoss
+  type: DBLossIntersection
   params:
     alpha: 5
     beta: 10
+    gamma: 5
     ohem_ratio: 3
 
 optimizer:
@@ -90,6 +95,7 @@ scheduler:
   params:
     T_max: ${train.epoch}
     eta_min: 0
+
 
 border_creator:
   params:
@@ -115,8 +121,10 @@ train_transforms:
       p: 0.3
       brightness: 0.12
       saturation: 0.5
+
   - HorizontalFlip:
       p: 0.3
+
   - OneOf:
       p: 1.0
       args:
@@ -130,6 +138,7 @@ train_transforms:
             shift_limit_x: 0.07
             border_mode: 0
             p: 0.3
+
 
 train_pre_transforms:
     OneOf:
@@ -145,6 +154,8 @@ train_pre_transforms:
             noise_value: [ 32, 64 ]
 
 val_pre_transforms: null
+
+
 
 val_transforms: null
 

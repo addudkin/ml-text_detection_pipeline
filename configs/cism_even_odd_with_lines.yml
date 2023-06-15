@@ -1,7 +1,7 @@
 description:
   repo: TD
   project_name: global
-  experiment_name: two_lines_one_head_scale_loss_ddp_resnet50_0510_loss
+  experiment_name: cism_even_odd_with_lines_new_annotation
 
 tensorboard: # если не требуется, то просто убираем этот блок
   # Папка куда буду складываться логи тензорборда
@@ -24,8 +24,8 @@ data:
 
 train:
   epoch: 1000
-  crop_size: [1024, 1024]
-  batch_size: 1
+  crop_size: [480, 640]
+  batch_size: 16
   workers: 12
   pin_memory: True
   gpu_index: 0
@@ -39,10 +39,10 @@ checkpoint:
   average_top_k: 5
 
 # Имя класса используемого датасета из datasets/__init__.py
-dataset_name: MultiTDDatasetTwoLines
+dataset_name: EvenOddLine
 
 model:
-  class_model: DBCism
+  class_model: DBCismEvenOddLines
   backbone:
     type: resnet50
     args:
@@ -53,7 +53,7 @@ model:
     args:
       inner_channels: 256
   head:
-    type: DBHeadV2
+    type: DBHeadV3
     args:
       out_channels: 2
       k: 50
@@ -66,15 +66,29 @@ loss_function:
     beta: 10
     ohem_ratio: 3
 
-optimizer:
-  # Имя класса
-  type: AdamW
-  # Передаваемые параметры
+training_type: &training_type multilabel
+
+loss_function_lines:
+  type: MultiLoss
   params:
-    lr: 0.0007
-    betas:
-      - 0.9
-      - 0.999
+    loss_1:
+      name: FocalLoss
+      weight: 1
+      param:
+        reduction: mean
+        mode: *training_type
+    loss_2:
+      name: TverskyLoss
+      weight: 1
+      param:
+        alpha: 0.35
+        beta: 0.65
+        mode: *training_type
+
+optimizer:
+  type: AdamW
+  params:
+    lr: 0.001
     weight_decay: 0.0005
 
 scheduler:
@@ -112,6 +126,14 @@ train_transforms:
       saturation: 0.5
   - HorizontalFlip:
       p: 0.5
+  - ShiftScaleRotate:
+      shift_limit: 0.07
+      rotate_limit: 3
+      shift_limit_y: 0
+      shift_limit_x: 0.07
+      border_mode: 0
+      p: 1.0
+
 
 
 val_transforms: null

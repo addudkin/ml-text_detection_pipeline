@@ -15,7 +15,7 @@ from utils.tools import load_json
 from utils.resize import resize
 
 
-class TextDetDataset(
+class TextDetPervichka(
     ABC,
     Dataset
 ):
@@ -59,16 +59,13 @@ class TextDetDataset(
         self.pre_transforms = get_aug_from_config(self.config[f"{split}_pre_transforms"])
 
         self.annotation = load_json(
-            os.path.join(
-                config['data_preprocess']['data_folder'],
-                f'annotation_{self.split}.json'
-            )
-        )
+                    os.path.join(f"{self.config['data_preprocess']['data_folder']}/annotation_{split}.json")
+                )
 
     def load_sample(
             self,
             idx: int
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    ) -> Tuple[np.ndarray, np.ndarray]:
         """Loads a single sample from the dataset.
 
         Args:
@@ -94,29 +91,25 @@ class TextDetDataset(
         image = self.loader.fast_numpy_load(image_path).astype(np.float32)
         targets = self.loader.fast_numpy_load(targets_path).astype(np.float32)
 
-        shrink_maps, shrink_masks, threshold_maps, threshold_masks = targets
-
-        return image, shrink_maps, shrink_masks, threshold_maps, threshold_masks
+        return image, targets
 
     def __getitem__(self, idx):
+        image, targets = self.load_sample(idx)
 
-        image, shrink_maps, shrink_masks, threshold_maps, threshold_masks = self.load_sample(idx)
+        targets = targets.transpose(1, 2, 0)
 
-        # TODO Тут будет ресайз масок после загрузки
-
-        masks = np.array([shrink_maps, shrink_masks, threshold_maps, threshold_masks]).transpose(1, 2, 0)
-
-        image, masks = resize(
+        image, targets = resize(
             image=image.astype(np.uint8),
-            mask=masks.astype(np.uint8),
-            img_size=self.config['train']['image_size'],
+            mask=targets.astype(np.uint8),
+            img_size=self.config[f'{self.split}']['image_size'],
             split=self.split.upper()
         )
 
         image = self.pre_transforms(image=image)['image']
         image = image.astype(np.float32)
-        masks = masks.astype(np.float32)
-        shrink_maps, shrink_masks, threshold_maps, threshold_masks = masks.transpose(2, 0, 1)
+        targets = targets.astype(np.float32)
+
+        shrink_maps, shrink_masks, threshold_maps, threshold_masks = targets.transpose(2, 0, 1)
         threshold_maps /= 255
 
         transformed = self.transforms(
@@ -134,7 +127,6 @@ class TextDetDataset(
         shrink_masks = torch.as_tensor(shrink_masks)
         threshold_maps = torch.as_tensor(threshold_maps)
         threshold_masks = torch.as_tensor(threshold_masks)
-
 
         out = dict(
             image=image,

@@ -78,6 +78,8 @@ class TrainerV2(Trainer):
 
         self.resize = A.LongestMaxSize(max_size=1024)
 
+        self.scaler = torch.cuda.amp.GradScaler()
+
     def train_step(self) -> None:
         """
         Perform a training step over the training dataset.
@@ -110,15 +112,15 @@ class TrainerV2(Trainer):
             # Calculate loss
             full_loss = self.criterion(out, loss_inp)
             # Backward
-            full_loss['loss'].backward()
-            self.optimizer.step()
-            # self.scaler.scale(loss).backward()
-            # self.scaler.step(self.optimizer)
-            # self.scaler.update()
+            full_loss = full_loss['loss']
+            self.scaler.scale(full_loss).backward()
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+
             self.optimizer.zero_grad(set_to_none=True)
 
             # Update loss
-            batch_loss = full_loss['loss'].detach().cpu().item()
+            batch_loss = full_loss.detach().cpu().item()
             train_loss += batch_loss
 
             # Log batch loss

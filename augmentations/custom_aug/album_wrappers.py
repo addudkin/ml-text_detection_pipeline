@@ -1,3 +1,5 @@
+import random
+
 import numpy as np
 
 from augmentations.custom_aug.augment import (
@@ -6,6 +8,8 @@ from augmentations.custom_aug.augment import (
 )
 
 from albumentations.core.transforms_interface import ImageOnlyTransform
+
+from augraphy import DirtyDrum, LightingGradient, BadPhotoCopy
 
 
 class WaveDeform(ImageOnlyTransform):
@@ -124,3 +128,91 @@ class ElasticTransform(ImageOnlyTransform):
             "sigma": self.sigma,
             "alpha_affine": self.alpha_affine
         }
+
+
+class DirtyDrumTransform(ImageOnlyTransform):
+    """
+
+    """
+
+    def __init__(self, **kwargs):
+        self.kwargs = {**kwargs}
+        self.p = self.kwargs['p']
+        super().__init__(self.p)
+        self.dirty_drum = DirtyDrum()
+
+    def apply(self,
+              img: np.ndarray,
+              **params
+              ) -> np.ndarray:
+
+        p = random.uniform(0, 1)
+        # if p < self.p:
+        img = self.dirty_drum(img)
+        return img
+
+    def get_transform_init_args_names(self):
+        """
+        This method is required for albumentations compatability
+        """
+        return self.kwargs
+
+
+class LightingGradientTransform(ImageOnlyTransform):
+    """
+
+    """
+
+    def __init__(self, **kwargs):
+        self.kwargs = {**kwargs}
+        self.p = self.kwargs['p']
+        super().__init__(self.p)
+        self.ligth_gradien = LightingGradient()
+
+    def apply(self,
+              img: np.ndarray,
+              **params
+              ) -> np.ndarray:
+
+        p = random.uniform(0, 1)
+        #if p < self.p:
+        img = self.ligth_gradien(img)
+
+        return img
+
+    def get_transform_init_args_names(self):
+        """
+        This method is required for albumentations compatability
+        """
+        return self.kwargs
+
+
+class BadPhotoCopyTransform(ImageOnlyTransform):
+    """
+
+    """
+
+    def __init__(self, **kwargs):
+        self.kwargs = {**kwargs}
+        self.p = self.kwargs.pop('p')
+        self.noise_iteration = self.kwargs['noise_iteration']
+        self.noise_value = self.kwargs['noise_value']
+
+        super().__init__(self.p)
+        self.bad_copy = BadPhotoCopy(self.kwargs)
+
+    def apply(self,
+              img: np.ndarray,
+              **params
+              ) -> np.ndarray:
+
+        p = random.uniform(0, 1)
+        #if p < self.p:
+        img = self.bad_copy(img)
+        return img
+
+    def get_transform_init_args_names(self):
+        """
+        This method is required for albumentations compatability
+        """
+        return self.kwargs

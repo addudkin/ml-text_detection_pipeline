@@ -1,5 +1,5 @@
 __all__ = ['build_model']
-supported_models = ['FPN', 'UNET', 'HOURGLASS', 'DB', 'MASKSPOTTER', 'DB2']
+supported_models = ['FPN', 'UNET', 'HOURGLASS', 'DB', 'DBCismEvenOddLines', 'MASKSPOTTER', 'DB2']
 
 
 def build_model(model_name, **kwargs):

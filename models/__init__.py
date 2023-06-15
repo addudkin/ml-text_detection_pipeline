@@ -3,8 +3,10 @@ import torch
 from omegaconf import DictConfig
 from utils.tools import load_checkpoints
 from models.dbpp import DBNetpp
-from src.models.detectors.db import DB, DBCism
+from src.models.detectors.db import DB, DBCism, DBCismEvenOddLines
 from torch.nn.parallel.distributed import DistributedDataParallel
+import segmentation_models_pytorch as sm
+from models.db_with_lines import TDLineHead
 
 
 def get_model(
@@ -21,10 +23,25 @@ def get_model(
     Returns:
         The modified model object.
     """
-    model = eval(cfg["model"]["class_model"])(cfg)
+    if cfg["model"]["class_model"] in ['Unet', 'DeepLabV3Plus']:
+        model = eval(f"sm.{cfg['model']['class_model']}")(**cfg['model']['hparams'])
+    else:
+        model = eval(cfg["model"]["class_model"])(cfg)
 
     if cfg["checkpoint"]["path2best"]:
         load_checkpoints(model, cfg['checkpoint']['path2best'])
+    # if cfg["model"]["tune_model"] == 'TDLineHead':
+    #     main_model = eval(cfg["model"]["class_model"])(cfg)
+    #     load_checkpoints(main_model, cfg['checkpoint']['path2best'])
+    #     model = TDLineHead(main_model, 256)
+
+    #
+    # else:
+    #     model = eval(cfg["model"]["class_model"])(cfg)
+    #
+    # if cfg["model"]["tune_model"] != 'TDLineHead':
+    #     if cfg["checkpoint"]["path2best"]:
+    #         load_checkpoints(model, cfg['checkpoint']['path2best'])
 
     model = model.to(device)
 

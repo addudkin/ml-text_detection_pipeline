@@ -1,7 +1,7 @@
 description:
   repo: TD
   project_name: global
-  experiment_name: two_lines_one_head_scale_loss_ddp_resnet50_0510_loss
+  experiment_name: line_tune_crop_think15_f_backbone
 
 tensorboard: # если не требуется, то просто убираем этот блок
   # Папка куда буду складываться логи тензорборда
@@ -25,10 +25,11 @@ data:
 train:
   epoch: 1000
   crop_size: [1024, 1024]
-  batch_size: 1
-  workers: 12
+  batch_size: 32
+
+  workers: 8
   pin_memory: True
-  gpu_index: 0
+  gpu_index: 1
   ddp_backend: NCCL # GLOO, MPI, TCP, NCCL
 
 val:
@@ -39,12 +40,14 @@ checkpoint:
   average_top_k: 5
 
 # Имя класса используемого датасета из datasets/__init__.py
-dataset_name: MultiTDDatasetTwoLines
+dataset_name: LineSeg
 
 model:
-  class_model: DBCism
+  tune_model: TDLineHead
+  freeze_backbone: True
+  class_model: DB
   backbone:
-    type: resnet50
+    type: resnet34
     args:
       in_channels: 3
       pretrained: true
@@ -53,28 +56,35 @@ model:
     args:
       inner_channels: 256
   head:
-    type: DBHeadV2
+    type: DBHead
     args:
       out_channels: 2
       k: 50
   weights: ""
 
+training_type: &training_type multilabel
+
 loss_function:
-  type: DBLossV2
+  type: MultiLoss
   params:
-    alpha: 5
-    beta: 10
-    ohem_ratio: 3
+    loss_1:
+      name: FocalLoss
+      weight: 1
+      param:
+        reduction: mean
+        mode: *training_type
+    loss_2:
+      name: TverskyLoss
+      weight: 1
+      param:
+        alpha: 0.4
+        beta: 0.6
+        mode: *training_type
 
 optimizer:
-  # Имя класса
   type: AdamW
-  # Передаваемые параметры
   params:
-    lr: 0.0007
-    betas:
-      - 0.9
-      - 0.999
+    lr: 0.001
     weight_decay: 0.0005
 
 scheduler:
@@ -106,13 +116,36 @@ post_processor:
     min_area: 10.
 
 train_transforms:
+  - RandomCrop:
+      p: 1.0
+      height: 640
+      width: 640
   - ColorJitter:
       p: 0.5
       brightness: 0.12
       saturation: 0.5
   - HorizontalFlip:
       p: 0.5
+  - ShiftScaleRotate:
+      rotate_limit: 30
+      border_mode: 0
+      interpolation: 2
+      p: 0.5
 
+train_pre_transforms:
+    OneOf:
+      p: 0.5
+      args:
+        - DirtyDrumTransform:
+            p: 1.0
+        - LightingGradientTransform:
+            p: 1.0
+        - BadPhotoCopyTransform:
+            p: 1.0
+            noise_iteration: [ 1, 1 ]
+            noise_value: [ 32, 64 ]
+
+val_pre_transforms: null
 
 val_transforms: null
 

@@ -1,7 +1,7 @@
 description:
   repo: TD
   project_name: global
-  experiment_name: new_exp_640_480_size
+  experiment_name: text_and_lines_det640_box
 
 mlflow: null # если не требуется, то просто убираем этот блок
 #  # exp_name - в таком видео в mlflow будет отображаться эксперимент
@@ -31,12 +31,12 @@ data:
   std: [0.229, 0.224, 0.225]
 
 data_preprocess:
-  data_folder: /home/addudkin/cism/data/source_data/prepared_data640
+  data_folder: /home/addudkin/cism/data/source_data/text_and_lines_mask640_box
 
 train:
   epoch: 1000
   image_size: [640, 480]
-  batch_size: 16
+  batch_size: 8
   workers: 12
   pin_memory: True
   gpu_index: 0
@@ -49,7 +49,7 @@ checkpoint:
   average_top_k: 5
 
 # Имя класса используемого датасета из datasets/__init__.py
-dataset_name: TextDetDataset
+dataset_name: TextDetLines
 
 model:
   class_model: DB
@@ -63,18 +63,37 @@ model:
     args:
       inner_channels: 256
   head:
-    type: DBHead
+    type: DBHeadLines
     args:
       out_channels: 2
       k: 50
   weights: ""
 
+training_type: &training_type multilabel
+
 loss_function:
-  type: DBLoss
-  params:
-    alpha: 5
-    beta: 10
-    ohem_ratio: 3
+  classic_DB:
+    type: DBLoss
+    params:
+      alpha: 5
+      beta: 10
+      ohem_ratio: 3
+  lines_segm:
+    type: MultiLoss
+    params:
+      loss_1:
+        name: FocalLoss
+        weight: 1
+        param:
+          reduction: mean
+          mode: *training_type
+      loss_2:
+        name: TverskyLoss
+        weight: 1
+        param:
+          alpha: 0.5
+          beta: 0.5
+          mode: *training_type
 
 optimizer:
   type: AdamW
@@ -139,10 +158,10 @@ train_pre_transforms:
             p: 1.0
         - LightingGradientTransform:
             p: 1.0
-        - BadPhotoCopyTransform:
-            p: 1.0
-            noise_iteration: [ 1, 1 ]
-            noise_value: [ 32, 64 ]
+#        - BadPhotoCopyTransform:
+#            p: 1.0
+#            noise_iteration: [ 1, 1 ]
+#            noise_value: [ 32, 64 ]
 
 val_pre_transforms: null
 

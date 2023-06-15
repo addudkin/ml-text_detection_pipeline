@@ -1,9 +1,11 @@
-from src.models.heads.db_head import DBHead, DBHeadV2
+from src.models.heads.db_head import DBHead, DBHeadEvenOdd, DBHeadLines
 from src.models.heads.simple_head import ConvHead
 from src.models.heads.db_head_without_conv_trans import DBHeadSimpleUpsample
 
 __all__ = ['build_head']
-support_head = ['ConvHead', 'DBHead', 'DBHeadV2', 'MaskTextSpotterHead', 'DBHeadSimpleUpsample']
+support_head = [
+    'ConvHead', 'DBHead', 'DBHeadEvenOdd', 'DBHeadLines', 'MaskTextSpotterHead', 'DBHeadSimpleUpsample'
+]
 
 
 def build_head(head_name, **kwargs):

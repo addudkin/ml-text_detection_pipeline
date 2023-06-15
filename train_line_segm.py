@@ -12,17 +12,17 @@ from omegaconf import DictConfig
 from typing import Tuple, List, Dict
 from logger import Logger
 
-from utils.tools import get_config, get_device, save_json
+from utils.tools import get_config, save_json
 from utils.convert_weights import tracing_weights, average_weights
-from utils.metrics import show_metrics, Evaluator, SegPostprocessing, draw_polygons
+from utils.metrics import draw_polygons
 
 from criterions import get_criterion
-from optimizers import get_optimizer_and_scheduler
-from datasets import get_dataset, get_dataloader
-from models import get_model
+from train import Trainer
+import albumentations as A
 
+from time import time
 
-class Trainer:
+class TrainerLD(Trainer):
     """
     Base class for training deep learning models.
 
@@ -73,73 +73,12 @@ class Trainer:
             self,
             config: DictConfig
     ):
-        self.config = config
+        super(TrainerLD, self).__init__(config)
 
-        # Init Logger
-        self.logger = Logger(self.config)
-
-        # Init base train element
-        self.device = get_device(config)
-        self.model = get_model(config, self.device).to(self.device)
         self.criterion = get_criterion(config["loss_function"]).to(self.device)
-        self.optimizer, self.scheduler = get_optimizer_and_scheduler(self.model, config)
-
-        self.mean = torch.FloatTensor(config.data.mean).view(-1, 1, 1).to(self.device)
-        self.std = torch.FloatTensor(config.data.std).view(-1, 1, 1).to(self.device)
-
-        # Init datasets and loaders
-        train_dataset = get_dataset("train", config)
-        val_dataset = get_dataset("val", config)
-
-        self.train_loader = get_dataloader(train_dataset, config)
-        self.val_loader = get_dataloader(val_dataset, config)
-
         self.scaler = torch.cuda.amp.GradScaler()
 
-        # Set other parameters
-        self.save_best_folder = os.path.join(
-            os.getcwd(),
-            "weights",
-            config["description"]["project_name"],
-            config["description"]["experiment_name"]
-        )
-        os.makedirs(self.save_best_folder, exist_ok=True)
-        self.best_checkpoints = list()
-
-        # Set metric
-        self.best_score = 0
-        # Set Evaluator
-        self.evaluator = Evaluator()
-        # Set Postprocessor
-        self.postprocessor = SegPostprocessing(**config['post_processor']['params'])
-
-    def train(self) -> None:
-        """
-        Train the model for a number of epochs.
-
-        This method iterates over the training epochs and includes:
-        - training steps
-        - evaluating steps with saving weights and showing metrics
-        - convert and average weights
-        """
-        # Iter by epoch
-        for epoch in range(self.config["train"]["epoch"]):
-            self.current_epoch = epoch
-
-            if self.config["main_process"]:
-                print(f"\nCurrent learning rate is: {self.optimizer.param_groups[0]['lr']:.6f}")
-
-            self.train_step()
-
-            if self.config['train']['use_ddp']:
-                if self.config["main_process"]:
-                    self.evaluate_step(self.model.module)
-                torch.distributed.barrier()
-            else:
-                self.evaluate_step(self.model)
-
-        if self.config["main_process"]:
-            self.convert_weights()
+        print(self.criterion)
 
     def train_step(self) -> None:
         """
@@ -153,6 +92,13 @@ class Trainer:
 
         # Set train mode
         self.model.train()
+        if config['model']['tune_model']:
+            if config['model']['freeze_all']:
+                print('freeze backbone and neck')
+                self.model.freeze_feature_extractor()
+            elif config['model']['freeze_backbone']:
+                print('freeze only backbone')
+                self.model.freeze_feature_backbone()
 
         # Set train loss counter
         train_loss = torch.scalar_tensor(0)
@@ -164,24 +110,25 @@ class Trainer:
         iter_done = len(self.train_loader) * self.current_epoch
 
         # Iter by loop
+
         for i, (batch) in enumerate(loop):
             iter_done += 1
             counter += 1
-            self.optimizer.zero_grad(set_to_none=True)
 
             # Forward step
             out, loss_inp = self._forward_step(self.model, batch)
+            if i == 0:
+                print(out.shape)
 
             # Calculate loss
-
-            full_loss = self.criterion(out, loss_inp)['loss']
-
+            print(out.shape, loss_inp.shape)
+            full_loss = self.criterion(out, loss_inp)
             # Backward
-            full_loss.backward()
+            self.scaler.scale(full_loss).backward()
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
 
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=0.5)
-
-            self.optimizer.step()
+            self.optimizer.zero_grad(set_to_none=True)
 
             # Update loss
             batch_loss = full_loss.detach().cpu().item()
@@ -234,6 +181,9 @@ class Trainer:
         # Save weights if metrics were improved
         self.check_current_result(model, self.eval_loss)
 
+        # Print metrics for current epoch
+        self.evaluator.clear_data()
+
     def evaluate(
             self,
             model: torch.nn.Module,
@@ -274,15 +224,17 @@ class Trainer:
             for i, (batch) in enumerate(loop):
 
                 # Forward step
-                preds, loss_inp = self._forward_step(model, batch)
+                out, loss_inp = self._forward_step(self.model, batch)
+                if i == 0:
+                    print(out.shape)
+                # Calculate metrics
+                precision, recall = self.calculate_metrics(out[:, 0, :, :], loss_inp[:, 0, :, :])
 
-
-                precision, recall = self.calculate_metrics(preds[:, 0, :, :], loss_inp['shrink_map'])
                 # Calculate loss
-                full_loss = self.criterion(preds, loss_inp)
+                full_loss = self.criterion(out, loss_inp)
 
                 # Update loss
-                self.eval_loss += full_loss['loss'].detach().cpu().item()
+                self.eval_loss += full_loss.detach().cpu().item()
 
                 # Set loss value for loop
                 loop.set_postfix({"loss": float(self.eval_loss / (i+1))})
@@ -308,20 +260,11 @@ class Trainer:
             self.current_epoch
         )
 
-        metrics = [self.f1_score.item(), self.precision.item(), self.recall.item()]
-        metrics_name = ['F1', 'precision', 'recall']
-
-        self.logger.log_epoch_metrics(
-            metrics,
-            metrics_name,
-            self.current_epoch
-        )
-
     def _forward_step(
             self,
             model: torch.nn.Module,
             batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, List]
-    ) -> Tuple[torch.Tensor, Dict]:
+    ) -> Tuple[List[torch.Tensor], List[Dict]]:
         """
         Perform a forward step for a given batch of data_text_recognition.
 
@@ -346,113 +289,22 @@ class Trainer:
             - The tensor with lengths of target tensors
             - The labels sequence tensor
         """
-        image_batch, shrink_maps_batch, shrink_masks_batch, threshold_maps_batch, threshold_masks_batch = batch
+        image_batch, masks = batch
 
         image_batch = image_batch.to(self.device)
+        masks = masks.to(self.device)
+
         image_batch.div_(255.)
         image_batch.sub_(self.mean)
         image_batch.div_(self.std)
 
-        shrink_maps_batch = shrink_maps_batch.to(self.device)
-        shrink_masks_batch = shrink_masks_batch.to(self.device)
-        threshold_maps_batch = threshold_maps_batch.to(self.device)
-        threshold_masks_batch = threshold_masks_batch.to(self.device)
-
         out = model(image_batch)
 
-        loss_inp = {
-            'shrink_map': shrink_maps_batch,
-            'shrink_mask': shrink_masks_batch,
-            'threshold_map': threshold_maps_batch,
-            'threshold_mask': threshold_masks_batch
-        }
-
-        return out, loss_inp
-
-    def check_current_result(
-            self,
-            model: torch.nn.Module,
-            metrics: pd.DataFrame) -> None:
-        """Check the current result of the model and save the best model checkpoint if necessary.
-
-        Args:
-            model: Epoch-trained model
-            metrics: DataFrame containing the metrics for the current epoch.
-        """
-        # TODO: Кажется, что нужен более гибкий критерий выбора метрики для сохранения ckpt
-
-        # Check both metrics
-        if self.f1_score > self.best_score:
-            print("Saving best model ...")
-            self.best_score = self.f1_score.detach().cpu().item()
-            # Create path to best result
-            path2best_weight = os.path.join(
-                self.save_best_folder,
-                f"{self.config['description']['experiment_name']}_score_{self.best_score}.pth"
-            )
-
-            # Save model
-            torch.save(model.state_dict(), path2best_weight)
-            # Append current best checkpoint path to the list
-            self.best_checkpoints.append(path2best_weight)
-
-            # Logic for holding best K checkpoint
-            if len(self.best_checkpoints) > self.config["checkpoint"]['average_top_k']:
-                self.best_checkpoints.pop(0)
-
-            # Save list with paths to best checkpoints
-            path2best_checkpoints = os.path.join(self.save_best_folder, 'top_checkpoints.json')
-
-            save_json(
-                self.best_checkpoints,
-                path2best_checkpoints
-            )
-
-    def convert_weights(self) -> None:
-        """Average the weights of the best K models and trace the model for serving.
-
-       This method averages the weights of the best K models based on the WAR and CAR
-       metrics, and then traces the model using the PyTorch JIT library. It also logs
-       the traced model to MlFlow.
-       """
-
-        self.config["train"]["use_ddp"] = False
-        self.model = average_weights(self.config, self.best_checkpoints)
-        tracing_weights(self.model, self.config)
-
-    def calculate_metrics(self, batch_pred, batch_target, thr=0.5):
-        batch_pred = (batch_pred > thr).float() * 1
-        precision = 0
-        recall = 0
-
-        for pred, target in zip(batch_pred, batch_target):
-            tp = target * pred
-            n_gt = torch.count_nonzero(target)
-            if not n_gt:
-                continue
-
-            n_tp = torch.count_nonzero(tp)
-            n_prd = torch.count_nonzero(pred)
-
-            precision += n_tp / n_prd if n_prd != 0 else 0
-            recall += n_tp / n_gt if n_gt != 0 else 0
-
-        return precision/batch_pred.shape[0], recall/batch_pred.shape[0]
+        return out, masks
 
 
 if __name__ == "__main__":
-    from utils.tools import set_random_seed, get_config, save_json
-    from clearml import Task
-
-    # task = Task.init(
-    #     project_name='full text detection',
-    #     task_name='no scaller new mean std params small crops',
-    # )
-    set_random_seed()
 
     config = get_config()
-
-    #task.connect_configuration(config['config_path'])
-
-    trainer = Trainer(config)
+    trainer = TrainerLD(config)
     trainer.train()

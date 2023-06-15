@@ -13,7 +13,7 @@ sys.path.append(os.getcwd())
 from logger.mlflow_tools import MlFlowLogger
 from utils.tools import get_config, load_json
 from models import get_model
-from models.normalizer import ModelWrapper
+from utils.normalizer import ModelWrapperTextDetection
 
 
 def tracing2jit(
@@ -33,6 +33,7 @@ def tracing2jit(
         path2model: The file path to save the traced model to.
     """
     traced_model = torch.jit.trace(model, x)
+    print(f'Model will be saved to {path2model}')
     torch.jit.save(traced_model, path2model)
 
 
@@ -59,6 +60,7 @@ def run_jit(
     with torch.no_grad():
         start = time()
         jit_out = jit_model(x)
+        print('jit_out', jit_out.shape)
         print(f"JIT cpu FPS {1 / (time() - start)}")
 
     return jit_out
@@ -119,15 +121,15 @@ def tracing_weights(
         0, 255, [
             1,
             3, # TODO: Потом придется параметризовать при grayscale режиме
-            config["data"]["image_size"]["height"],
-            config["data"]["image_size"]["width"]
+            config["train"]["image_size"][0],
+            config["train"]["image_size"][1]
         ]
     )
 
-    model = ModelWrapper(
+    model = ModelWrapperTextDetection(
         model,
-        std=config["post_transforms"][0]["Normalize"]["std"],
-        mean=config["post_transforms"][0]["Normalize"]["mean"]
+        std=config["data"]["mean"],
+        mean=config["data"]["std"]
     )
 
     path2model = os.path.join(
@@ -163,7 +165,8 @@ if __name__ == '__main__':
     path2weights = os.path.join(
         os.getcwd(),
         "weights",
-        config["description"]["project_name"]
+        config["description"]["project_name"],
+        config["description"]["experiment_name"]
     )
 
     # Tracing weights if you need using path to weights
@@ -178,6 +181,7 @@ if __name__ == '__main__':
     # Average weights if you need using flag -a True
     if config["checkpoint"]["do_average"]:
         path2checkpoints = os.path.join(path2weights, "top_checkpoints.json")
+        print(path2checkpoints)
         assert os.path.exists(path2checkpoints), "top_checkpoints.json wasn't found"
         checkpoints = load_json(path2checkpoints)
         model = average_weights(config, checkpoints)

@@ -43,8 +43,8 @@ class MakeBorderMap:
         polygon_shape = Polygon(polygon)
         if polygon_shape.area <= 0:
             return
-        #distance = polygon_shape.area * (1 - np.power(self.shrink_ratio, 2)) / polygon_shape.length
-        distance = np.log(polygon_shape.area * (1 - np.power(self.shrink_ratio, 2)) / polygon_shape.length + 1)
+        distance = polygon_shape.area * (1 - np.power(self.shrink_ratio, 2)) / polygon_shape.length
+        #distance = np.log(polygon_shape.area * (1 - np.power(self.shrink_ratio, 2)) / polygon_shape.length + 1)
         #distance = min((polygon_shape.area) * (1 - np.power(self.shrink_ratio, 2))/ (polygon_shape.length), np.log(polygon_shape.area + 1))
         subject = [tuple(l) for l in polygon]
         padding = pyclipper.PyclipperOffset()

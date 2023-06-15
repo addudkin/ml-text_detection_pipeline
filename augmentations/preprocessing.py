@@ -188,3 +188,37 @@ def resize_if_needed(img: np.ndarray, polygons: List[np.ndarray], max_size: int 
         return resized_img, resized_polygons, ratio
 
     return resized_img, resized_polygons
+
+
+def resize_if_needed_even_odd(img: np.ndarray, polygons: List[List[np.ndarray]], max_size: int = 2048, return_ratio=False):
+    h, w, c = img.shape
+    max_side_size = max([h, w])
+
+    if max_side_size < max_size:
+        ratio = 1.
+        if return_ratio:
+            return img, polygons, ratio
+        return img, polygons
+
+    ratio = max_size / max_side_size
+
+    target_h, target_w = int(h * ratio), int(w * ratio)
+
+    resized_img = cv2.resize(img, (target_w, target_h))
+
+    resized_polygons = []
+
+    for group in polygons:
+        group_polygons = []
+        for line in group:
+            line_polygons = []
+            for polygon in line:
+                r_p = [(int(x * ratio), int(y * ratio)) for x, y in polygon]
+                line_polygons.append(np.array(r_p))
+            group_polygons.append(line_polygons)
+        resized_polygons.append(group_polygons)
+
+    if return_ratio:
+        return resized_img, resized_polygons, ratio
+
+    return resized_img, resized_polygons

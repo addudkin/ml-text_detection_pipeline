@@ -21,8 +21,10 @@ from optimizers import get_optimizer_and_scheduler
 from datasets import get_dataset, get_dataloader
 from models import get_model
 
+from train import Trainer
 
-class Trainer:
+
+class TrainerTDLine(Trainer):
     """
     Base class for training deep learning models.
 
@@ -69,19 +71,19 @@ class Trainer:
         trainer = Trainer(config)
         trainer.train()
     """
+
     def __init__(
             self,
             config: DictConfig
     ):
-        self.config = config
 
+        self.config = config
         # Init Logger
         self.logger = Logger(self.config)
 
         # Init base train element
         self.device = get_device(config)
         self.model = get_model(config, self.device).to(self.device)
-        self.criterion = get_criterion(config["loss_function"]).to(self.device)
         self.optimizer, self.scheduler = get_optimizer_and_scheduler(self.model, config)
 
         self.mean = torch.FloatTensor(config.data.mean).view(-1, 1, 1).to(self.device)
@@ -108,38 +110,10 @@ class Trainer:
 
         # Set metric
         self.best_score = 0
-        # Set Evaluator
-        self.evaluator = Evaluator()
         # Set Postprocessor
-        self.postprocessor = SegPostprocessing(**config['post_processor']['params'])
-
-    def train(self) -> None:
-        """
-        Train the model for a number of epochs.
-
-        This method iterates over the training epochs and includes:
-        - training steps
-        - evaluating steps with saving weights and showing metrics
-        - convert and average weights
-        """
-        # Iter by epoch
-        for epoch in range(self.config["train"]["epoch"]):
-            self.current_epoch = epoch
-
-            if self.config["main_process"]:
-                print(f"\nCurrent learning rate is: {self.optimizer.param_groups[0]['lr']:.6f}")
-
-            self.train_step()
-
-            if self.config['train']['use_ddp']:
-                if self.config["main_process"]:
-                    self.evaluate_step(self.model.module)
-                torch.distributed.barrier()
-            else:
-                self.evaluate_step(self.model)
-
-        if self.config["main_process"]:
-            self.convert_weights()
+        self.criterion_td = get_criterion(config["loss_function"]['classic_DB']).to(self.device)
+        self.criterion_lines = get_criterion(config["loss_function"]['lines_segm']).to(self.device)
+        print(self.criterion_lines)
 
     def train_step(self) -> None:
         """
@@ -167,21 +141,23 @@ class Trainer:
         for i, (batch) in enumerate(loop):
             iter_done += 1
             counter += 1
-            self.optimizer.zero_grad(set_to_none=True)
 
             # Forward step
-            out, loss_inp = self._forward_step(self.model, batch)
+            preds, loss_input_td, loss_input_lines = self._forward_step(self.model, batch)
 
-            # Calculate loss
+            td_loss = self.criterion_td(preds[:, :3, :, :], loss_input_td)
 
-            full_loss = self.criterion(out, loss_inp)['loss']
+            line_pred_inp = preds[:, 3:, :, :].contiguous()
+            lines_loss = self.criterion_lines(line_pred_inp, loss_input_lines)
 
             # Backward
-            full_loss.backward()
+            td_loss = td_loss['loss']
+            full_loss = td_loss + lines_loss
 
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=0.5)
-
-            self.optimizer.step()
+            self.scaler.scale(full_loss).backward()
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+            self.optimizer.zero_grad(set_to_none=True)
 
             # Update loss
             batch_loss = full_loss.detach().cpu().item()
@@ -217,23 +193,6 @@ class Trainer:
             self.current_epoch
         )
 
-    def evaluate_step(self, model: torch.nn.Module) -> None:
-        """Evaluates the model's performance on the val dataset.
-
-        This method gets the predicted values for the validation data_text_recognition, calculates
-        evaluation metrics, and logs the epoch metrics to TensorBoard and MlFlow.
-        If the metrics improved, the current model weights are saved as a checkpoint.
-        Metrics also will be printed.
-
-        Args:
-            model: Evaluating model
-        """
-        # Get predicted values
-        self.evaluate(model, self.val_loader)
-
-        # Save weights if metrics were improved
-        self.check_current_result(model, self.eval_loss)
-
     def evaluate(
             self,
             model: torch.nn.Module,
@@ -265,8 +224,14 @@ class Trainer:
 
         loop = tqdm(loader, desc='Evaluate')
 
-        self.precision = torch.zeros(size=(1,), dtype=torch.float32).to(self.device)
-        self.recall = torch.zeros(size=(1,), dtype=torch.float32).to(self.device)
+        self.precision_td = torch.zeros(size=(1,), dtype=torch.float32).to(self.device)
+        self.recall_td = torch.zeros(size=(1,), dtype=torch.float32).to(self.device)
+        self.f1_score_td = torch.zeros(size=(1,), dtype=torch.float32).to(self.device)
+
+        self.precision_line = torch.zeros(size=(1,), dtype=torch.float32).to(self.device)
+        self.recall_line = torch.zeros(size=(1,), dtype=torch.float32).to(self.device)
+        self.f1_score_line = torch.zeros(size=(1,), dtype=torch.float32).to(self.device)
+
         self.f1_score = torch.zeros(size=(1,), dtype=torch.float32).to(self.device)
 
         with torch.no_grad():
@@ -274,33 +239,55 @@ class Trainer:
             for i, (batch) in enumerate(loop):
 
                 # Forward step
-                preds, loss_inp = self._forward_step(model, batch)
+                preds, loss_input_td, loss_input_lines = self._forward_step(self.model, batch)
 
-
-                precision, recall = self.calculate_metrics(preds[:, 0, :, :], loss_inp['shrink_map'])
                 # Calculate loss
-                full_loss = self.criterion(preds, loss_inp)
+                td_loss = self.criterion_td(preds[:, :3, :, :], loss_input_td)
+
+                line_pred_inp = preds[:, 3:, :, :].contiguous()
+                lines_loss = self.criterion_lines(line_pred_inp, loss_input_lines)
+
+                td_loss = td_loss['loss']
+                full_loss = td_loss + lines_loss
+
+                # Calculate metrics for text_det
+                precision_td, recall_td = self.calculate_metrics(preds[:, 0, :, :], loss_input_td['shrink_map'])
+                precision_line, recall_line = self.calculate_metrics(preds[:, 3, :, :], loss_input_lines[:, 0, :, :])
 
                 # Update loss
-                self.eval_loss += full_loss['loss'].detach().cpu().item()
+                self.eval_loss += full_loss.detach().cpu().item()
 
                 # Set loss value for loop
                 loop.set_postfix({"loss": float(self.eval_loss / (i+1))})
 
-                self.precision += precision
-                self.recall += recall
+                self.precision_td += precision_td
+                self.precision_line += precision_line
 
-            self.precision /= (i + 1)
-            self.recall /= (i + 1)
-            self.f1_score += 2 * self.precision * self.recall / (self.precision + self.recall) + 1e-16
+                self.recall_td += recall_td
+                self.recall_line += recall_line
+
+            self.precision_td /= (i + 1)
+            self.precision_line /= (i + 1)
+
+            self.recall_td /= (i + 1)
+            self.recall_line /= (i + 1)
+
+            self.f1_score_td += 2 * self.precision_td * self.recall_td / (self.precision_td + self.recall_td) + 1e-16
+            self.f1_score_line += 2 * self.precision_line * self.recall_line / (self.precision_line + self.recall_line) + 1e-16
 
             # Print mean train loss
             self.eval_loss = self.eval_loss / len(loader)
             print(f"evaluate loss - {self.eval_loss}")
-            print(f"PRECISION - {self.precision}")
-            print(f"RECALL - {self.recall}")
-            print(f"F1_SCORE - {self.f1_score}")
+            print(f"precision_td - {self.precision_td}")
+            print(f"recall_td - {self.recall_td}")
+            print(f"f1_td - {self.f1_score_td}")
 
+            print(f"precision_line - {self.precision_line}")
+            print(f"recall_line - {self.recall_line}")
+            print(f"f1_line - {self.f1_score_line}")
+
+            self.f1_score = (self.f1_score_line + self.f1_score_td)/2
+            print(f"mean_f1 - {self.f1_score}")
         # Log epoch loss to Tensorboard and MlFlow
         self.logger.log_epoch_loss(
             self.eval_loss.item(),
@@ -308,20 +295,11 @@ class Trainer:
             self.current_epoch
         )
 
-        metrics = [self.f1_score.item(), self.precision.item(), self.recall.item()]
-        metrics_name = ['F1', 'precision', 'recall']
-
-        self.logger.log_epoch_metrics(
-            metrics,
-            metrics_name,
-            self.current_epoch
-        )
-
     def _forward_step(
             self,
             model: torch.nn.Module,
-            batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, List]
-    ) -> Tuple[torch.Tensor, Dict]:
+            batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]
+    ) -> Tuple[torch.Tensor, Dict, Dict]:
         """
         Perform a forward step for a given batch of data_text_recognition.
 
@@ -346,7 +324,8 @@ class Trainer:
             - The tensor with lengths of target tensors
             - The labels sequence tensor
         """
-        image_batch, shrink_maps_batch, shrink_masks_batch, threshold_maps_batch, threshold_masks_batch = batch
+        image_batch, shrink_maps_batch, shrink_masks_batch,\
+        threshold_maps_batch, threshold_masks_batch, lines_mask_batch = batch
 
         image_batch = image_batch.to(self.device)
         image_batch.div_(255.)
@@ -358,16 +337,18 @@ class Trainer:
         threshold_maps_batch = threshold_maps_batch.to(self.device)
         threshold_masks_batch = threshold_masks_batch.to(self.device)
 
+        lines_mask_batch = lines_mask_batch.to(self.device)
+
         out = model(image_batch)
 
-        loss_inp = {
+        loss_input_td = {
             'shrink_map': shrink_maps_batch,
             'shrink_mask': shrink_masks_batch,
             'threshold_map': threshold_maps_batch,
             'threshold_mask': threshold_masks_batch
         }
 
-        return out, loss_inp
+        return out, loss_input_td, lines_mask_batch
 
     def check_current_result(
             self,
@@ -408,17 +389,6 @@ class Trainer:
                 path2best_checkpoints
             )
 
-    def convert_weights(self) -> None:
-        """Average the weights of the best K models and trace the model for serving.
-
-       This method averages the weights of the best K models based on the WAR and CAR
-       metrics, and then traces the model using the PyTorch JIT library. It also logs
-       the traced model to MlFlow.
-       """
-
-        self.config["train"]["use_ddp"] = False
-        self.model = average_weights(self.config, self.best_checkpoints)
-        tracing_weights(self.model, self.config)
 
     def calculate_metrics(self, batch_pred, batch_target, thr=0.5):
         batch_pred = (batch_pred > thr).float() * 1
@@ -441,18 +411,6 @@ class Trainer:
 
 
 if __name__ == "__main__":
-    from utils.tools import set_random_seed, get_config, save_json
-    from clearml import Task
-
-    # task = Task.init(
-    #     project_name='full text detection',
-    #     task_name='no scaller new mean std params small crops',
-    # )
-    set_random_seed()
-
     config = get_config()
-
-    #task.connect_configuration(config['config_path'])
-
-    trainer = Trainer(config)
+    trainer = TrainerTDLine(config)
     trainer.train()

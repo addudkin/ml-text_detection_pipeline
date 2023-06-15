@@ -1,6 +1,7 @@
 import os.path
 import random
 from abc import ABC
+from scipy.ndimage import gaussian_filter1d
 
 import cv2
 import torch
@@ -18,8 +19,69 @@ from augmentations.preprocessing import random_crop, pad_if_neededV2
 from augmentations.mmocr.random_crop import TextDetRandomCropV2
 import albumentations as A
 
+def roll_top_left_first(coords: np.array) -> np.array:
+    for _ in range(4):
+        distances = np.linalg.norm(coords, 2, axis=1)
+        is_first = np.argmin(distances) == 0
 
-class MultiTDDatasetTwoLines(
+        if is_first:
+            break
+        coords = np.roll(coords, 1, 0)
+    else:
+        raise Exception("Failed to find correct sort")
+    return coords
+
+
+def calculate_euclidean(pnt_1: np.ndarray,
+                        pnt_2: np.ndarray) -> np.ndarray:
+    """
+
+    :param pnt_1:
+    :param pnt_2:
+
+    :return:
+    """
+    legs = np.power(pnt_1[np.newaxis] - pnt_2, 2)
+    distance = np.sqrt(legs[:, 0] + legs[:, 1])
+
+    return distance
+
+
+def order_four_points(pts: np.ndarray,
+                      sort_using_euclidean: bool = True) -> np.ndarray:
+    """
+
+    :param pts:
+    :param sort_using_euclidean:
+    :return:
+    """
+    # sort the points based on their x-coordinates
+    x_sorted = pts[np.argsort(pts[:, 0]), :]
+    # grab the left-most and right-most points from the sorted
+    # x-coordinate points
+    left_most = x_sorted[:2, :]
+    right_most = x_sorted[2:, :]
+    # now, sort the left-most coordinates according to their
+    # y-coordinates so we can grab the top-left and bottom-left
+    # points, respectively
+    left_most = left_most[np.argsort(left_most[:, 1]), :]
+    (tl, bl) = left_most
+    # now that we have the top-left coordinate, use it as an
+    # anchor to calculate the Euclidean distance between the
+    # top-left and right-most points; by the Pythagorean
+    # theorem, the point with the largest distance will be
+    # our bottom-right point
+    if sort_using_euclidean:
+        d = calculate_euclidean(tl, right_most)
+    else:
+        d = right_most[:, 1]
+    tr, br = right_most[np.argsort(d), :]
+    # return the coordinates in top-left, top-right,
+    # bottom-right, and bottom-left order
+    return np.array([tl, tr, br, bl], dtype=np.float32)
+
+
+class EvenOddLine(
     TextDetDataset
 ):
     """A dataset class for Optical Character Recognition (OCR) tasks.
@@ -54,7 +116,7 @@ class MultiTDDatasetTwoLines(
                  config: DictConfig,
                  split: str):
 
-        super(MultiTDDatasetTwoLines, self).__init__(config, split)
+        super(EvenOddLine, self).__init__(config, split)
         self.config = config
         self.split = split
 
@@ -70,7 +132,7 @@ class MultiTDDatasetTwoLines(
         self.images_polygons = []
         self.images_labels = []
         self.cropper = TextDetRandomCropV2(tuple(self.config['train']['crop_size']))
-        self.resie = A.LongestMaxSize(max_size=1024)
+        self.resie = A.Resize(height=640, width=640)
         for k, v in self.config['data']['datasets'].items():
             self.datasets_name.append(k)
             self.dataset_prob.append(v['p'])
@@ -188,90 +250,234 @@ class MultiTDDatasetTwoLines(
 
         return image, polygons, labels
 
+    def get_dots(self, point, top):
+        rect = cv2.minAreaRect(point)
+        (x, y), (h, w), angle = rect
+        #     if angle >= 45:
+        #         h, w = w, h
+        box = cv2.boxPoints(((x, y), (h, w), angle))
+        # box = sorted(box , key=lambda k: [k[1], k[0]])
+        box = order_four_points(box)
+        # box = roll_top_left_first(box)
+        if top:
+            return box[0], box[1]
+        else:
+            return box[-1], box[-2]
+
+    def smooth_line(self, line, sigma=1.5):
+        firt_dot = line[0][0]
+        last_dot = line[-1][1]
+
+        line = np.vstack(line)
+
+        line[:, 0] = gaussian_filter1d(line[:, 0], sigma)
+        line[:, 1] = gaussian_filter1d(line[:, 1], sigma)
+
+        line = np.vstack([firt_dot, line, last_dot])
+        return line
+
+    def get_row_line_first(self, line_even, line_odd, width, sigma=2.0):
+        even_row = [self.get_dots(i, top=False) for i in line_even]
+        even_row = self.smooth_line(even_row)
+
+        odd_row = [self.get_dots(i, top=True) for i in line_odd]
+        odd_row = self.smooth_line(odd_row)
+
+        new_line = np.vstack([even_row, odd_row])
+        new_line = new_line[new_line[:, 0].argsort()]
+
+        new_line[:, 0] = gaussian_filter1d(new_line[:, 0], sigma)
+        new_line[:, 1] = gaussian_filter1d(new_line[:, 1], sigma)
+
+        first_dot = new_line[0]
+        last_dot = new_line[-1]
+
+        sigma = 10.0
+        new_line[:, 0] = gaussian_filter1d(new_line[:, 0], sigma)
+        new_line[:, 1] = gaussian_filter1d(new_line[:, 1], sigma)
+
+        new_line = np.vstack([[0, first_dot[1]], new_line, [width, last_dot[1]]])
+
+        return new_line
+
+    def get_row_line_second(self, line_even, line_odd, width, sigma=2.0):
+        even_row = [self.get_dots(i, top=True) for i in line_even]
+        even_row = self.smooth_line(even_row)
+
+        odd_row = [self.get_dots(i, top=False) for i in line_odd]
+        odd_row = self.smooth_line(odd_row)
+
+        new_line = np.vstack([even_row, odd_row])
+        new_line = new_line[new_line[:, 0].argsort()]
+
+        new_line[:, 0] = gaussian_filter1d(new_line[:, 0], sigma)
+        new_line[:, 1] = gaussian_filter1d(new_line[:, 1], sigma)
+
+        first_dot = new_line[0]
+        last_dot = new_line[-1]
+
+        new_line = np.vstack([[0, first_dot[1]], new_line, [width, last_dot[1]]])
+
+        sigma = 10.0
+        new_line[:, 0] = gaussian_filter1d(new_line[:, 0], sigma)
+        new_line[:, 1] = gaussian_filter1d(new_line[:, 1], sigma)
+
+        new_line = np.vstack([[0, first_dot[1]], new_line, [width, last_dot[1]]])
+
+        return new_line
+
+    def get_smoth_signle_bottom_line(self, line, width):
+        line = [self.get_dots(i, top=False) for i in line]
+        line = self.smooth_line(line)
+
+        first_dot = line[0]
+        last_dot = line[-1]
+
+        new_line = np.vstack([[0, first_dot[1]], line, [width, last_dot[1]]])
+
+        sigma = 10.0
+        new_line[:, 0] = gaussian_filter1d(new_line[:, 0], sigma)
+        new_line[:, 1] = gaussian_filter1d(new_line[:, 1], sigma)
+        new_line = np.vstack([[0, first_dot[1]], new_line, [width, last_dot[1]]])
+
+        return new_line
+
+    def get_straight_line(self, lines, width):
+        new_lines = []
+        for line in lines:
+            y_center = (line[:, 1].max() + line[:, 1].min()) // 2
+            start_dot = [0, y_center]
+            end_dot = [width, y_center]
+            new_line = np.array([start_dot, end_dot])
+            new_lines.append(new_line)
+        return new_lines
+
+    def create_mask(self, polygons, labels, image):
+
+        polys_even, polys_odd, _ = self.get_polys(polygons, labels)
+
+        width, height = image.shape[:2]
+
+        mask1 = np.zeros((width, height))
+        if len(polys_even) < len(polys_odd):
+            print('Пум пум')
+
+        full_lines = []
+        if len(polys_even) != len(polys_odd):
+            for even_line, odd_line in zip(polys_even[:-1], polys_odd):
+                line = self.get_row_line_first(even_line, odd_line, width)
+                full_lines.append(line)
+
+            for even_line, odd_line in zip(polys_even[1:], polys_odd):
+                line = self.get_row_line_second(even_line, odd_line, width)
+                full_lines.append(line)
+
+            #full_lines.append(self.get_smoth_signle_bottom_line(polys_even[-1], width))
+        else:
+            for even_line, odd_line in zip(polys_even, polys_odd):
+                line = self.get_row_line_first(even_line, odd_line, width)
+                full_lines.append(line)
+
+            for even_line, odd_line in zip(polys_even[1:], polys_odd[:-1]):
+                line = self.get_row_line_second(even_line, odd_line, width)
+                full_lines.append(line)
+
+            #full_lines.append(self.get_smoth_signle_bottom_line(polys_odd[-1], width))
+
+        full_lines = self.get_straight_line(full_lines, width)
+
+        for line in full_lines:
+            mask1 = cv2.polylines(mask1.astype(np.int32), [line.astype(np.int32)], False, color=(1, 1, 1),
+                                 thickness=6)
+
+        mask2 = (mask1==0).astype(np.int32)
+
+        return mask1, mask2
+
+    def get_polys(self, polys, labels):
+        polys_even = []
+        polys_odd = []
+        all_polys = []
+        for line, label in zip(polys, labels):
+            if label % 2 == 0:
+                line = [np.array(word).reshape(-1, 2) for word in line]
+                line = [word for word in line if word.shape[0] > 1]
+                line = [self.additional_check(word) for word in line]
+                polys_even.append(line)
+                all_polys.extend(line)
+            else:
+                line = [np.array(word).reshape(-1, 2) for word in line]
+                line = [word for word in line if word.shape[0] > 1]
+                line = [self.additional_check(word) for word in line]
+                polys_odd.append(line)
+                all_polys.extend(line)
+        return polys_even, polys_odd, all_polys
+
     def __getitem__(self, idx):
 
         image, polygons, labels = self.load_sample(idx)
 
+        line_masks1, line_masks2 = self.create_mask(polygons, labels, image)
+
         polys_even = []
         polys_odd = []
         for line, label in zip(polygons, labels):
-            if label%2 == 0:
+            if label % 2 == 0:
                 for word in line:
                     p = np.array(word).reshape(-1, 2)
-                    if p.shape[0]>1:
+                    if p.shape[0] > 1:
                         polys_even.append(p)
             else:
                 for word in line:
                     p = np.array(word).reshape(-1, 2)
-                    if p.shape[0]>1:
+                    if p.shape[0] > 1:
                         polys_odd.append(p)
 
         polys_even = [self.additional_check(i) for i in polys_even]
         polys_odd = [self.additional_check(i) for i in polys_odd]
 
-        # create crop
-        transformed_image, transformed_poly = pad_if_neededV2(
-            image,
-            [polys_even, polys_odd] # Группа полигонов
-        )
-
-        # if self.split == 'train':
-        #     transformed_poly_group = []
-        #     for gr in transformed_poly:
-        #         transformed_poly_group.append([i.flatten() for i in gr])
-        #
-        #     cropper_input = {
-        #         'img': transformed_image,
-        #         'gt_polygons': transformed_poly_group,
-        #     }
-        #     answer = self.cropper.transform(cropper_input)
-        #     transformed_image = answer['img']
-        #     transformed_poly = answer['gt_polygons']
-
-        transformed_poly_group = []
-        for gr in transformed_poly:
-            transformed_poly_group.append([np.array(i).reshape(-1, 2).astype(np.int32) for i in gr])
-
-        transformed_poly_group = self.corted_coords(transformed_poly_group)
+        transformed_poly_group = self.corted_coords([polys_even, polys_odd])
 
         # Создаем таргеты для четных
         shrink_maps_even, shrink_masks_even, threshold_maps_even, threshold_masks_even = self.target_func.create_target(
-            transformed_image,
+            image,
             transformed_poly_group[0]
         )
 
         # Создаем таргеты для не четных
         shrink_maps_odd, shrink_masks_odd, threshold_maps_odd, threshold_masks_odd = self.target_func.create_target(
-            transformed_image,
+            image,
             transformed_poly_group[1]
         )
 
-        # Применяем основные аугменташки
-        transformed = self.transforms(
-            image=transformed_image,
-            masks=[shrink_maps_even, shrink_masks_even, threshold_maps_even, threshold_masks_even,
-                   shrink_maps_odd, shrink_masks_odd, threshold_maps_odd, threshold_masks_odd]
-        )
+        if self.split == 'train':
+            # Применяем основные аугменташки
+            transformed = self.transforms(
+                image=image,
+                masks=[shrink_maps_even, shrink_masks_even, threshold_maps_even, threshold_masks_even,
+                       shrink_maps_odd, shrink_masks_odd, threshold_maps_odd, threshold_masks_odd, line_masks1, line_masks2]
+            )
 
-        transformed_image = transformed['image']
-        shrink_maps_even, shrink_masks_even, threshold_maps_even, threshold_masks_even,\
-            shrink_maps_odd, shrink_masks_odd, threshold_maps_odd, threshold_masks_odd = transformed['masks']
+            image = transformed['image']
+            shrink_maps_even, shrink_masks_even, threshold_maps_even, threshold_masks_even,\
+                shrink_maps_odd, shrink_masks_odd, threshold_maps_odd, threshold_masks_odd, line_masks1, line_masks2 = transformed['masks']
 
-        # Ресайзим до 1024 с сохранением соотношения сторон
+
+        # Ресайзим
         transformed = self.resie(
-            image=transformed_image,
+            image=image,
             masks=[shrink_maps_even, shrink_masks_even, threshold_maps_even, threshold_masks_even,
-                   shrink_maps_odd, shrink_masks_odd, threshold_maps_odd, threshold_masks_odd]
+                   shrink_maps_odd, shrink_masks_odd, threshold_maps_odd, threshold_masks_odd, line_masks1, line_masks2]
         )
 
-        transformed_image = transformed['image']
+        image = transformed['image']
         shrink_maps_even, shrink_masks_even, threshold_maps_even, threshold_masks_even,\
-            shrink_maps_odd, shrink_masks_odd, threshold_maps_odd, threshold_masks_odd = transformed['masks']
+            shrink_maps_odd, shrink_masks_odd, threshold_maps_odd, threshold_masks_odd, line_masks1, line_masks2 = transformed['masks']
 
         shrink_masks_even = np.full_like(shrink_masks_even, fill_value=1., dtype=shrink_masks_even.dtype)
         shrink_masks_odd = np.full_like(shrink_masks_odd, fill_value=1., dtype=shrink_masks_odd.dtype)
 
-        image = torch.as_tensor(transformed_image).permute((2, 0, 1))
+        image = torch.as_tensor(image).permute((2, 0, 1))
 
         shrink_maps_even = torch.as_tensor(shrink_maps_even)
         shrink_masks_even = torch.as_tensor(shrink_masks_even)
@@ -283,10 +489,14 @@ class MultiTDDatasetTwoLines(
         threshold_maps_odd = torch.as_tensor(threshold_maps_odd)
         threshold_masks_odd = torch.as_tensor(threshold_masks_odd)
 
+        line_masks = np.array([line_masks1, line_masks2])
+        line_masks = torch.as_tensor(line_masks)
+
         out = dict(
             image=image,
             target_even=[shrink_maps_even, shrink_masks_even, threshold_maps_even, threshold_masks_even],
             target_odd=[shrink_maps_odd, shrink_masks_odd, threshold_maps_odd, threshold_masks_odd],
+            target_lines=line_masks,
             gt_polygons=transformed_poly_group,
         )
         return out
@@ -294,6 +504,6 @@ class MultiTDDatasetTwoLines(
     def __len__(self) -> int:
         """Return the len of list_filenames"""
         if self.split == "train":
-            return len(self.images_pathes) // 2
+            return len(self.images_pathes) // 5
         else:
             return len(self.images_pathes)

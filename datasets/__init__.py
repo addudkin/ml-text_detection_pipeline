@@ -5,7 +5,14 @@ from torch.utils.data import DataLoader, Dataset, DistributedSampler
 from datasets.base_dataset import TextDetDataset
 from datasets.multi_dataset import MultiTDDataset
 from datasets.cism_two_lines_dataset import MultiTDDatasetTwoLines
-from datasets.collate_fnc import collate_synt, collate_syntV2
+from datasets.line_segmentation import LineSeg
+from datasets.clasic_db_lines import LinesDataset
+from datasets.line_segmentation_only_text import LineSegOnlyText
+from datasets.cism_two_lines_and_lines_dataset import EvenOddLine
+from datasets.text_and_lines_dataset import TextDetLines
+from datasets.even_odd_dataset import TextDetEvenOdd
+from datasets.pervichka_dataset import TextDetPervichka
+from datasets.collate_fnc import collate_synt, collate_synt_line_det, collate_even_odd, collate_text_and_lines
 
 
 def get_dataset(
@@ -54,6 +61,6 @@ def get_dataloader(
                         sampler=sampler,
                         num_workers=cfg["train"]["workers"],
                         pin_memory=cfg["train"]["pin_memory"],
-                        collate_fn=collate_syntV2)
+                        collate_fn=collate_synt)
 
     return loader
