@@ -444,15 +444,16 @@ if __name__ == "__main__":
     from utils.tools import set_random_seed, get_config, save_json
     from clearml import Task
 
-    # task = Task.init(
-    #     project_name='full text detection',
-    #     task_name='no scaller new mean std params small crops',
-    # )
+    task = Task.init(
+        project_name='full text detection',
+        task_name='small size start pretrain big size',
+    )
+
     set_random_seed()
 
     config = get_config()
 
-    #task.connect_configuration(config['config_path'])
+    task.connect_configuration(config['config_path'])
 
     trainer = Trainer(config)
     trainer.train()

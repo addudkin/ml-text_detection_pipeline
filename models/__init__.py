@@ -2,11 +2,9 @@ import torch
 
 from omegaconf import DictConfig
 from utils.tools import load_checkpoints
-from models.dbpp import DBNetpp
 from src.models.detectors.db import DB, DBCism, DBCismEvenOddLines
 from torch.nn.parallel.distributed import DistributedDataParallel
 import segmentation_models_pytorch as sm
-from models.db_with_lines import TDLineHead
 
 
 def get_model(

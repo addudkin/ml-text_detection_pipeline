@@ -128,8 +128,8 @@ def tracing_weights(
 
     model = ModelWrapperTextDetection(
         model,
-        std=config["data"]["mean"],
-        mean=config["data"]["std"]
+        std=config["data"]["std"],
+        mean=config["data"]["mean"]
     )
 
     path2model = os.path.join(
@@ -186,6 +186,7 @@ if __name__ == '__main__':
         checkpoints = load_json(path2checkpoints)
         model = average_weights(config, checkpoints)
         path2averaged = os.path.join(path2weights, 'averaged.pth')
+        print(f'model will be save into {path2averaged}')
         torch.save(model.state_dict(), path2averaged)
         # Register model if you need using flag -r True
         if config["register_model"]:

@@ -212,7 +212,7 @@ if __name__ == '__main__':
     splits = ['train', 'val']
 
     workers = 12
-    path2config_db = '/home/addudkin/ml_text_detection/configs/general_td_new_mean_std_big_crops.yml'
+    path2config_db = '/home/addudkin/ml-text_detection_pipeline/configs/general_td_new_mean_std_big_crops.yml'
 
     with open(path2config_db) as f:
         config_db = yaml.full_load(f)

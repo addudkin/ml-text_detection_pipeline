@@ -17,8 +17,8 @@ tensorboard:
 data:
   datasets:
     pervichka:
-      images_folder: /home/addudkin/clearm_dataset_processing/data/full_text_text_detection/images
-      annotation_folder: /home/addudkin/clearm_dataset_processing/data/full_text_text_detection
+      images_folder: /home/addudkin/data/general_fulltext_detection/images
+      annotation_folder: /home/addudkin/data/general_fulltext_detection
       p: 1.0
   sample_name:
     train: train_annotation.json
@@ -28,7 +28,7 @@ data:
 
 
 data_preprocess:
-  data_folder: /home/addudkin/clearm_dataset_processing/data/full_text_text_detection/prepared_mask
+  data_folder: /home/addudkin/data/general_fulltext_detection/prepared_mask
   augmentation:
     OneOf:
       p: 0.5
