@@ -1,15 +1,34 @@
 import os
+import json
 import boto3
 import traceback
 
 import pandas as pd
+import numpy as np
 
-from tools import get_config, load_file
-
+from utils.tools import get_config, load_file
 from concurrent.futures import ProcessPoolExecutor
 from omegaconf import DictConfig
 from typing import List, Union, Tuple, Any
 from tqdm import tqdm
+
+
+class ImageSaver:
+    @staticmethod
+    def fast_numpy_save(array: np.ndarray,
+                        path2file: str) -> None:
+        with open(path2file, 'wb') as file:
+            file.write(array.dtype.name.encode() + b"\n")
+            file.write(json.dumps(array.shape).encode() + b"\n")
+            file.write(array.tobytes())
+
+    @staticmethod
+    def fast_numpy_load(path2file: str) -> np.ndarray:
+        with open(path2file, "rb") as file:
+            dtype = np.dtype(file.readline().strip())
+            shape = json.loads(file.readline().strip().decode())
+            buffer = file.read()
+        return np.ndarray(shape, dtype=dtype, buffer=buffer)
 
 
 def _download_file(file_name: str) -> None:

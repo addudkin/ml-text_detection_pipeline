@@ -1,20 +1,28 @@
 import os.path
+from abc import ABC
+
+import cv2
 import torch
 import numpy as np
 
 from typing import Tuple, List
 from omegaconf import DictConfig
 from torch.utils.data import Dataset
-from abc import ABC
 
-from augmentations import get_aug_from_config
-from prepare_mask import ImageSaver
 from utils.tools import load_json
 from utils.resize import ImageResizer
-from prepare_mask_pervichka import pickle_load
 
 
-class TextDetPervichka(
+def load_image(path: str, gray=False) -> np.ndarray:
+    image = cv2.imread(path)
+    if gray:
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    return image
+
+
+class TextDetPervichkaGT(
     ABC,
     Dataset
 ):
@@ -53,13 +61,14 @@ class TextDetPervichka(
         super(Dataset, self).__init__()
         self.config = config
         self.split = split
-        self.loader = ImageSaver()
-        self.transforms = get_aug_from_config(self.config[f"{split}_transforms"])
-        self.pre_transforms = get_aug_from_config(self.config[f"{split}_pre_transforms"])
-
         self.annotation = load_json(
-                    os.path.join(f"{self.config['data_preprocess']['data_folder']}/annotation_{split}.json")
-                )
+            os.path.join(f"{self.config['data']['datasets']['pervichka']['annotation_folder']}/{self.config['data']['sample_name'][split]}")
+        )
+
+        self.images = list(self.annotation.keys())
+        self.targets = []
+        for bboxes in self.annotation.values():
+            self.targets.append([np.array(bbox).reshape(-1, 2) for bbox in bboxes])
 
         self.resizer = ImageResizer(
             config['resizer']
@@ -68,7 +77,7 @@ class TextDetPervichka(
     def load_sample(
             self,
             idx: int
-    ) -> Tuple[np.ndarray, np.ndarray, List[np.ndarray]]:
+    ) -> Tuple[np.ndarray, List[np.ndarray]]:
         """Loads a single sample from the dataset.
 
         Args:
@@ -81,72 +90,33 @@ class TextDetPervichka(
         # TODO: Подгрузка сохраненных масок
 
         image_path = os.path.join(
-            self.config['data_preprocess']['data_folder'],
-            self.split,
-            self.annotation['images'][idx]
+            self.config['data']['datasets']['pervichka']['images_folder'],
+            self.images[idx]
         )
 
-        targets_path = os.path.join(
-            self.config['data_preprocess']['data_folder'],
-            self.split,
-            self.annotation['targets'][idx]
-        )
+        image = load_image(image_path)
 
-        polys_path = os.path.join(
-            self.config['data_preprocess']['data_folder'],
-            self.split,
-            self.annotation['polys'][idx]
-        )
+        targets = self.targets[idx]
 
-        image = self.loader.fast_numpy_load(image_path).astype(np.float32)
-        targets = self.loader.fast_numpy_load(targets_path).astype(np.float32)
-        polys = pickle_load(polys_path)
-
-        return image, targets, polys
+        return image, targets
 
     def __getitem__(self, idx):
-        image, targets, polys = self.load_sample(idx)
-
-        targets = targets.transpose(1, 2, 0)
+        image, text_polys = self.load_sample(idx)
 
         image_instance = self.resizer.run(image)
-        targets_instance = self.resizer.run(targets)
 
-        image = self.pre_transforms(image=image_instance.image)['image'].astype(np.float32)
-        targets = targets_instance.image.astype(np.float32)
+        image_tensor = torch.as_tensor(image_instance.image).permute((2, 0, 1))
 
-        shrink_maps, shrink_masks, threshold_maps, threshold_masks = targets.transpose(2, 0, 1)
-
-        threshold_maps /= 255
-
-        transformed = self.transforms(
-            image=image,
-            masks=[shrink_maps, shrink_masks, threshold_maps, threshold_masks]
-        )
-
-        image = transformed['image']
-        shrink_maps, shrink_masks, threshold_maps, threshold_masks = transformed['masks']
-
-        shrink_masks = np.full_like(shrink_masks, fill_value=1., dtype=shrink_masks.dtype)
-
-        image = torch.as_tensor(image).permute((2, 0, 1))
-        shrink_maps = torch.as_tensor(shrink_maps)
-        shrink_masks = torch.as_tensor(shrink_masks)
-        threshold_maps = torch.as_tensor(threshold_maps)
-        threshold_masks = torch.as_tensor(threshold_masks)
+        image_instance.image = image
 
         out = dict(
-            image=image,
-            shrink_maps=shrink_maps,
-            shrink_masks=shrink_masks,
-            threshold_maps=threshold_maps,
-            threshold_masks=threshold_masks,
+            image=image_tensor,
             image_instance=image_instance,
-            polys=polys,
+            text_polys=text_polys,
         )
 
         return out
 
     def __len__(self) -> int:
         """Return the len of list_filenames"""
-        return len(self.annotation['images'])
+        return len(self.images)

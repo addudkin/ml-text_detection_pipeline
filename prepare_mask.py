@@ -1,6 +1,5 @@
 import os
 import cv2
-import json
 
 import numpy as np
 from utils.lines_target_utils import create_lines_mask
@@ -11,28 +10,11 @@ from typing import Tuple, List, Any, Union
 from utils.tools import load_json, save_json
 from tqdm import tqdm
 from itertools import repeat
+from utils.prepare_data import ImageSaver
 
 
 from augmentations.preprocessing import resize_if_needed_even_odd
 from concurrent.futures import ProcessPoolExecutor
-
-
-class ImageSaver:
-    @staticmethod
-    def fast_numpy_save(array: np.ndarray,
-                        path2file: str) -> None:
-        with open(path2file, 'wb') as file:
-            file.write(array.dtype.name.encode() + b"\n")
-            file.write(json.dumps(array.shape).encode() + b"\n")
-            file.write(array.tobytes())
-
-    @staticmethod
-    def fast_numpy_load(path2file: str) -> np.ndarray:
-        with open(path2file, "rb") as file:
-            dtype = np.dtype(file.readline().strip())
-            shape = json.loads(file.readline().strip().decode())
-            buffer = file.read()
-        return np.ndarray(shape, dtype=dtype, buffer=buffer)
 
 
 def _additional_check(box: np.ndarray) -> np.ndarray:
@@ -77,7 +59,7 @@ class DBAnnotator:
         for k, v in self.config['data']['datasets'].items():
             for split in self.splits:
                 annotation = load_json(
-                    os.path.join(f"{v['annotation_folder']}/{split}_markup.json")
+                    os.path.join(f"{v['annotation_folder']}/{split}_annotation.json")
                 )
 
                 path2images = v['images_folder']
@@ -230,10 +212,11 @@ if __name__ == '__main__':
     splits = ['train', 'val']
 
     workers = 12
-    path2config_db = '/home/addudkin/ml-text_detection_pipeline/configs/general_td_new_mean_std_big_crops.yml'
+    path2config_db = '/home/addudkin/ml-text_detection_pipeline/configs/general_td_big_size.yml'
 
     with open(path2config_db) as f:
         config_db = yaml.full_load(f)
+
     config_db = OmegaConf.create(config_db)
     save_dirs = prepare_dir(config_db, splits)
 

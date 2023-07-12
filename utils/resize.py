@@ -1,40 +1,41 @@
 import cv2
-import random
 import numpy as np
-
 from typing import Tuple
 
+from utils.types import ImageResizerResult
 
-class ImageResizer(object):
+
+class ImageResizer:
     def __init__(self,
-                 input_size: Tuple[int, int],
-                 aspect_ration: bool = True,
-                 padding_type: str = "",
-                 padding_value: int = 0,
-                 interpolation_method: int = cv2.INTER_NEAREST) -> None:
+                 config) -> None:
 
-        self.input_size = input_size  # height, width
-        self.aspect_ration = aspect_ration
-        self.interpolation_method = interpolation_method
-        self.padding_value = padding_value
-        self.padding_type = padding_type.upper()
+        self.input_size = config.get("input_size", (640, 640))  # height, width
+        self.aspect_ration = config.get("aspect_ratio", True)
+        self.padding_type = config.get("padding_type", "right").upper()
+        self.padding_value = config.get("padding_value", 0)
+        self.resize_to_height = config.get("resize_to_height", False)
+        self.resize_to_power = config.get("resize_to_power", False)
+        self.interpolation_method = getattr(cv2, config.get("interpolation_method", "inter_nearest").upper())
 
         assert self.padding_type in ("RIGHT", "LEFT", "BOTH", ""), "Incorrect padding type"
 
-    def get_new_size(self,
-                     image: np.ndarray) -> Tuple[int, int]:
+    def get_new_size(self, image: np.ndarray) -> Tuple[int, int]:
 
         img_h, img_w = image.shape[:2]
         new_h, new_w = self.input_size
 
-        if img_h > img_w:
-            scale = new_h / img_h
-            resized_height = new_h
-            resized_width = int(img_w * scale)
+        if self.resize_to_height:
+            resized_width, resized_height = int(max(1, img_w * new_h / img_h)), new_h
+
         else:
-            scale = new_w / img_w
-            resized_height = int(img_h * scale)
-            resized_width = new_w
+            if img_h > img_w:
+                scale = new_h / img_h
+                resized_height = new_h
+                resized_width = int(img_w * scale)
+            else:
+                scale = new_w / img_w
+                resized_height = int(img_h * scale)
+                resized_width = new_w
 
         return min(new_w, resized_width), min(new_h, resized_height)
 
@@ -59,7 +60,7 @@ class ImageResizer(object):
             y2 -= (y2 - y1 - resized_height)
         else:
             x1, y1 = 0, 0
-            x2, y2 = new_h, new_w
+            x2, y2 = new_w, new_h
 
         return (y1, y2), (x1, x2)
 
@@ -67,8 +68,7 @@ class ImageResizer(object):
                             image: np.ndarray) -> Tuple[np.ndarray, Tuple[int, int]]:
         """
         """
-
-        image, (resized_width, resized_height) = self.resize_with_aspect(image)
+        resized_height, resized_width = image.shape[:2]
         (y1, y2), (x1, x2) = self.get_new_coords(resized_width, resized_height)
 
         new_image = np.pad(image,
@@ -98,20 +98,43 @@ class ImageResizer(object):
         image = cv2.resize(image, new_size, self.interpolation_method)
         return image, new_size
 
-    def resize(self,
-               image: np.ndarray) -> Tuple[np.ndarray,
-                                           Tuple[Tuple[int, int], Tuple[int, int]],
-                                           Tuple[float, float]]:
+    def resize_by_power(self, image: np.ndarray):
         """
         """
-        if not self.aspect_ration:
-            resized_image, (resized_width, resized_height) = self.resize_no_aspect(image)
+        height, width = image.shape[:2]
+        # magnify image size
+        target_size = min(max(height, width), 2048)
+        ratio = target_size / max(height, width)
+        self.input_size = int(height * ratio), int(width * ratio)
+        image, _ = self.resize_no_aspect(image)
+        # make canvas and paste image
+        target_h32, target_w32 = image.shape[:2]
+        if self.input_size[0] % 32 != 0:
+            target_h32 = self.input_size[0] + (32 - self.input_size[0] % 32)
+        if self.input_size[1] % 32 != 0:
+            target_w32 = self.input_size[1] + (32 - self.input_size[1] % 32)
+
+        self.input_size = (target_h32, target_w32)
+
+        return image
+
+    def run(self,
+            image: np.ndarray) -> ImageResizerResult:
+        """
+        """
+
+        if self.resize_to_power:
+            resized_image = self.resize_by_power(image)
 
         else:
-            if self.padding_type:
-                resized_image, (resized_width, resized_height) = self.resize_with_padding(image)
-            else:
+            if self.aspect_ration:
                 resized_image, (resized_width, resized_height) = self.resize_with_aspect(image)
+
+            else:
+                resized_image, (resized_width, resized_height) = self.resize_no_aspect(image)
+
+        if self.padding_type or self.resize_to_power:
+            resized_image, (resized_width, resized_height) = self.resize_with_padding(resized_image)
 
         # calculate multiply coefficients
         height, width = image.shape[:2]
@@ -119,36 +142,10 @@ class ImageResizer(object):
         # get coords for slicing
         (y1, y2), (x1, x2) = self.get_new_coords(resized_width, resized_height)
 
-        return resized_image, ((y1, y2), (x1, x2)), (kw, kh)
-
-
-def resize(image: np.ndarray,
-           mask: np.ndarray,
-           img_size: Tuple[int, int],
-           split: str) -> Tuple[np.ndarray, np.ndarray]:
-    padding_value = 0
-    padding_type = "BOTH"
-    interpolation_method = cv2.INTER_NEAREST
-
-    resizer = ImageResizer(img_size,
-                           padding_value=padding_value,
-                           interpolation_method=interpolation_method)
-
-    if split == "TRAIN":
-        interpolation_method = random.choice([cv2.INTER_AREA, cv2.INTER_BITS, cv2.INTER_BITS2,
-                                              cv2.INTER_CUBIC, cv2.INTER_LANCZOS4, cv2.INTER_LINEAR,
-                                              cv2.INTER_LINEAR_EXACT, cv2.INTER_MAX, cv2.INTER_NEAREST,
-                                              cv2.INTER_NEAREST_EXACT, cv2.INTER_TAB_SIZE, cv2.INTER_TAB_SIZE2])
-        padding_type = random.choice(["BOTH", "LEFT", "RIGHT"])
-        padding_value = random.randint(0, 255)
-
-    resizer.padding_type = padding_type
-
-    mask = resizer.resize_with_padding(mask)[0]
-
-    resizer.interpolation_method = interpolation_method
-    resizer.padding_value = padding_value
-
-    image = resizer.resize_with_padding(image)[0]
-
-    return image, mask
+        return ImageResizerResult(
+            image=resized_image,
+            coords=(x1, y1, x2, y2),
+            scale=(kw, kh),
+            height=height,
+            width=width
+        )

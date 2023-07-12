@@ -1,25 +1,23 @@
+import numpy as np
 import torch.distributed as dist
 import pandas as pd
-import numpy as np
-import torch.nn.functional as F
-
 import torch
-import cv2
 import os
 
 from tqdm import tqdm
 from omegaconf import DictConfig
 from typing import Tuple, List, Dict
 from logger import Logger
+from utils.hmean import HmeanIOUMetric
+from utils.metrics import FullTextPostProcessor
 
-from utils.tools import get_config, get_device, save_json
+from utils.tools import get_device
 from utils.convert_weights import tracing_weights, average_weights
-from utils.metrics import show_metrics, Evaluator, SegPostprocessing, draw_polygons
-
 from criterions import get_criterion
 from optimizers import get_optimizer_and_scheduler
 from datasets import get_dataset, get_dataloader
 from models import get_model
+from utils.types import ImageResizerResult, SegmentationMaskResult
 
 
 class Trainer:
@@ -109,9 +107,7 @@ class Trainer:
         # Set metric
         self.best_score = 0
         # Set Evaluator
-        self.evaluator = Evaluator()
-        # Set Postprocessor
-        self.postprocessor = SegPostprocessing(**config['post_processor']['params'])
+        self.postprocessor = FullTextPostProcessor(**config['post_processor']['params'])
 
     def train(self) -> None:
         """
@@ -234,6 +230,27 @@ class Trainer:
         # Save weights if metrics were improved
         self.check_current_result(model, self.eval_loss)
 
+    def get_polys(self, prediction, image_instances):
+
+        prediction = prediction[:, 0, :, :]
+
+        polys = []
+        for idx in range(prediction.shape[0]):
+            pred = prediction[idx]
+            target_instance = image_instances[idx]
+
+            mask = SegmentationMaskResult(
+                prediction_labels=pred,
+                coords=target_instance.coords,
+                scale=target_instance.scale,
+            )
+
+            postprocessor_result = self.postprocessor.run(args=mask)
+            bboxes = [np.array(prediction.coords) for prediction in postprocessor_result]
+            polys.append(bboxes)
+
+        return polys
+
     def evaluate(
             self,
             model: torch.nn.Module,
@@ -269,15 +286,19 @@ class Trainer:
         self.recall = torch.zeros(size=(1,), dtype=torch.float32).to(self.device)
         self.f1_score = torch.zeros(size=(1,), dtype=torch.float32).to(self.device)
 
+        self.hmean = torch.zeros(size=(1,), dtype=torch.float32).to(self.device)
+        self.precision_iou = torch.zeros(size=(1,), dtype=torch.float32).to(self.device)
+        self.recall_iou = torch.zeros(size=(1,), dtype=torch.float32).to(self.device)
+
         with torch.no_grad():
             # Iter by loop
             for i, (batch) in enumerate(loop):
 
                 # Forward step
-                preds, loss_inp = self._forward_step(model, batch)
-
+                preds, loss_inp, image_instances, target_polys = self._forward_step(model, batch)
 
                 precision, recall = self.calculate_metrics(preds[:, 0, :, :], loss_inp['shrink_map'])
+
                 # Calculate loss
                 full_loss = self.criterion(preds, loss_inp)
 
@@ -287,8 +308,14 @@ class Trainer:
                 # Set loss value for loop
                 loop.set_postfix({"loss": float(self.eval_loss / (i+1))})
 
-                self.precision += precision
-                self.recall += recall
+                predict_polys = self.get_polys(preds, image_instances)
+
+                for target, predict, instance in zip(target_polys, predict_polys, image_instances):
+                    metric = HmeanIOUMetric(target, predict)
+                    # self.save_image(hmean, instance, predict)
+                    hmean.append(metric['hmean'])
+                    precision.append(metric['precision'])
+                    recall.append(metric['recall'])
 
             self.precision /= (i + 1)
             self.recall /= (i + 1)
@@ -320,8 +347,9 @@ class Trainer:
     def _forward_step(
             self,
             model: torch.nn.Module,
-            batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, List]
-    ) -> Tuple[torch.Tensor, Dict]:
+            batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor,
+                         torch.Tensor, torch.Tensor, List[ImageResizerResult], List[List[np.ndarray]]]
+    ) -> Tuple[torch.Tensor, Dict, List[ImageResizerResult], List[List[np.ndarray]]]:
         """
         Perform a forward step for a given batch of data_text_recognition.
 
@@ -346,7 +374,8 @@ class Trainer:
             - The tensor with lengths of target tensors
             - The labels sequence tensor
         """
-        image_batch, shrink_maps_batch, shrink_masks_batch, threshold_maps_batch, threshold_masks_batch = batch
+        image_batch, shrink_maps_batch, shrink_masks_batch, \
+        threshold_maps_batch, threshold_masks_batch, image_instances, target_polys = batch
 
         image_batch = image_batch.to(self.device)
         image_batch.div_(255.)
@@ -367,7 +396,7 @@ class Trainer:
             'threshold_mask': threshold_masks_batch
         }
 
-        return out, loss_inp
+        return out, loss_inp, image_instances, target_polys
 
     def check_current_result(
             self,
@@ -442,18 +471,8 @@ class Trainer:
 
 if __name__ == "__main__":
     from utils.tools import set_random_seed, get_config, save_json
-    from clearml import Task
-
-    task = Task.init(
-        project_name='full text detection',
-        task_name='small size start pretrain big size',
-    )
-
     set_random_seed()
 
-    config = get_config()
-
-    task.connect_configuration(config['config_path'])
-
+    config, task = get_config()
     trainer = Trainer(config)
     trainer.train()

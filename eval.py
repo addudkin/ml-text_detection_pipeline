@@ -75,6 +75,6 @@ class Evaluater(Trainer):
 
 if __name__ == "__main__":
 
-    config = get_config()
+    config, task = get_config()
     trainer = Evaluater(config)
     trainer.evaluate()

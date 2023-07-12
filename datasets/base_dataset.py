@@ -12,7 +12,6 @@ from torch.utils.data import Dataset
 from augmentations import get_aug_from_config
 from prepare_mask import ImageSaver
 from utils.tools import load_json
-from utils.resize import resize
 
 
 class TextDetDataset(

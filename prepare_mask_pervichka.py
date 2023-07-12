@@ -1,6 +1,7 @@
 import os
 import cv2
 import json
+import pickle
 
 import numpy as np
 from utils.lines_target_utils import create_lines_mask
@@ -33,6 +34,17 @@ class ImageSaver:
             shape = json.loads(file.readline().strip().decode())
             buffer = file.read()
         return np.ndarray(shape, dtype=dtype, buffer=buffer)
+
+
+def pickle_dumb(file, path2file):
+    with open(path2file, 'wb') as f:
+        pickle.dump(file, f)
+
+
+def pickle_load(path2file):
+    with open(path2file, 'rb') as f:
+        file = pickle.load(f)
+    return file
 
 
 def _additional_check(box: np.ndarray) -> np.ndarray:
@@ -169,7 +181,7 @@ def apply_augmentation(image, augmentation):
     return image
 
 
-def process_single_sample(event: Tuple) -> Tuple[str, str]:
+def process_single_sample(event: Tuple) -> Tuple[str, str, str]:
     """Processing one element"""
 
     image_path, image_polygons, image_name, split = event
@@ -177,10 +189,10 @@ def process_single_sample(event: Tuple) -> Tuple[str, str]:
     image = load_image(image_path)
 
     # Resize and check
-    image, polygons = resize_if_needed(image, image_polygons, max_size=1024)
+    image, polygons = resize_if_needed(image, image_polygons, max_size=2048)
 
     # Apply augmentations
-    #image = apply_augmentation(image, augmentation=augmentation_pipline)
+    # image = apply_augmentation(image, augmentation=augmentation_pipline)
 
     # Get targets
     targets = get_masks(target_func, image, polygons)
@@ -189,6 +201,7 @@ def process_single_sample(event: Tuple) -> Tuple[str, str]:
     file_name, _ = os.path.splitext(image_name)
     new_image_name = f'{file_name}_image.npy'
     new_target_name = f'{file_name}_targets.npy'
+    new_polys_name = f'{file_name}_polys.pkl'
 
     # Save result
     saver.fast_numpy_save(
@@ -201,7 +214,9 @@ def process_single_sample(event: Tuple) -> Tuple[str, str]:
         os.path.join(save_dirs[split], new_target_name)
     )
 
-    return new_image_name, new_target_name,
+    pickle_dumb(image_polygons, os.path.join(save_dirs[split], new_polys_name))
+
+    return new_image_name, new_target_name, new_polys_name
 
 
 if __name__ == '__main__':
@@ -211,8 +226,8 @@ if __name__ == '__main__':
 
     splits = ['train', 'val']
 
-    workers = 12
-    path2config_db = '/home/addudkin/ml-text_detection_pipeline/configs/general_td_new_mean_std_big_crops.yml'
+    workers = 8
+    path2config_db = '/home/addudkin/ml-text_detection_pipeline/configs/general_td_big_size.yml'
 
     with open(path2config_db) as f:
         config_db = yaml.full_load(f)
@@ -237,8 +252,10 @@ if __name__ == '__main__':
     for split in splits:
         annotation = {
             'images': [],
-            'targets': []
+            'targets': [],
+            'polys': []
         }
+
         images_pathes = images_pathes_dict[split]
         images_polygons = images_polygons_dict[split]
         images_names = images_names_dict[split]
@@ -250,12 +267,13 @@ if __name__ == '__main__':
         process_bar = tqdm(total=len(idxes), desc="Processing markup")
 
         with ProcessPoolExecutor(max_workers=workers) as executor:
-            for new_image_name, new_target_name in executor.map(
+            for new_image_name, new_target_name, new_polys_name in executor.map(
                     process_single_sample,
                     zip(images_pathes, images_polygons, images_names, repeat(split))
             ):
                 annotation['images'].append(new_image_name)
                 annotation['targets'].append(new_target_name)
+                annotation['polys'].append(new_polys_name)
                 process_bar.update()
 
         save_json(

@@ -10,7 +10,6 @@ from omegaconf import DictConfig
 from typing import List
 
 sys.path.append(os.getcwd())
-from logger.mlflow_tools import MlFlowLogger
 from utils.tools import get_config, load_json
 from models import get_model
 from utils.normalizer import ModelWrapperTextDetection
@@ -156,12 +155,6 @@ def tracing_weights(
 if __name__ == '__main__':
     config = get_config()
 
-    mlflow_logger = None
-    # Init mlflow and get id by fixed
-    if config['mlflow']:
-        mlflow_logger = MlFlowLogger(**config['mlflow'])
-        mlflow_logger._init_run_id() # В конфиге можно указать run_id для логирования в конкретный эксперимент
-
     path2weights = os.path.join(
         os.getcwd(),
         "weights",
@@ -173,10 +166,6 @@ if __name__ == '__main__':
     if config["checkpoint"]["path2best"]:
         model = get_model(config)
         tracing_weights(model, config)
-        # Register model if you need using flag -r True
-        if config["register_model"]:
-            print('Model registration in mlflow...')
-            mlflow_logger.register_model(model=model, path2mlflow='traced_model')
 
     # Average weights if you need using flag -a True
     if config["checkpoint"]["do_average"]:
@@ -188,11 +177,5 @@ if __name__ == '__main__':
         path2averaged = os.path.join(path2weights, 'averaged.pth')
         print(f'model will be save into {path2averaged}')
         torch.save(model.state_dict(), path2averaged)
-        # Register model if you need using flag -r True
-        if config["register_model"]:
-            print('Model registration in mlflow...')
-            mlflow_logger.register_model(model=model, path2mlflow='traced_model')
-
-
 
 

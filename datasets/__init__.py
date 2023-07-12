@@ -1,18 +1,24 @@
+import importlib
+
 from omegaconf import DictConfig
 
-from torch.utils.data import DataLoader, Dataset, DistributedSampler
-
+from torch.utils.data import DataLoader, DistributedSampler
 from datasets.base_dataset import TextDetDataset
-from datasets.multi_dataset import MultiTDDataset
-from datasets.cism_two_lines_dataset import MultiTDDatasetTwoLines
-from datasets.line_segmentation import LineSeg
-from datasets.clasic_db_lines import LinesDataset
-from datasets.line_segmentation_only_text import LineSegOnlyText
-from datasets.cism_two_lines_and_lines_dataset import EvenOddLine
-from datasets.text_and_lines_dataset import TextDetLines
-from datasets.even_odd_dataset import TextDetEvenOdd
-from datasets.pervichka_dataset import TextDetPervichka
-from datasets.collate_fnc import collate_synt, collate_synt_line_det, collate_even_odd, collate_text_and_lines
+
+from datasets.collate_fnc import collate_fnc, collate_gt
+
+
+collate_dict = {
+    'train': collate_fnc,
+    'val': collate_fnc,
+    'gt': collate_gt
+}
+
+
+def get_dataset_class(dataset_name: str):
+    module_name, class_name = dataset_name.rsplit('.', 1)
+    module = importlib.import_module(f"datasets.{module_name}")
+    return getattr(module, class_name)
 
 
 def get_dataset(
@@ -28,7 +34,8 @@ def get_dataset(
     Returns:
         OCRDataset, the initialized dataset class.
     """
-    return eval(cfg['dataset_name'])(cfg, split)
+    dataset = get_dataset_class(cfg['dataset_name'][split])
+    return dataset(cfg, split)
 
 
 def get_dataloader(
@@ -61,6 +68,6 @@ def get_dataloader(
                         sampler=sampler,
                         num_workers=cfg["train"]["workers"],
                         pin_memory=cfg["train"]["pin_memory"],
-                        collate_fn=collate_synt)
+                        collate_fn=collate_dict[dataset.split])
 
     return loader

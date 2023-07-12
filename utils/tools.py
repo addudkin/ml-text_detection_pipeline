@@ -1,6 +1,9 @@
 import os
 import random
 import argparse
+from textwrap import dedent
+
+import cv2
 import yaml
 import json
 
@@ -10,12 +13,45 @@ import numpy as np
 import pandas as pd
 
 from omegaconf import OmegaConf, DictConfig
-from typing import Any, Union
+from typing import Tuple, Any, Union
+from clearml import Task
+from clearml.task import TaskInstance
+
+
+def set_clearml_task(config: DictConfig):
+    # Инициализируем Clearml таску
+    task = Task.init(
+        project_name=config['description']['project_name'],
+        task_name=config['description']['experiment_name'],
+    )
+
+    # Устанавливаем конфиг
+    task.connect_configuration(config['config_path'])
+
+    # Устанавливаем параметры инициализации
+    task.set_parameters_as_dict({
+        'path2weight': config["checkpoint"]["path2best"],
+        'dataset_id': config['description']['dataset_id']
+    })
+
+    # Добавляем shell скрипт в базовые настройки контейнера
+    task.set_base_docker(
+        docker_setup_bash_script=dedent(
+            """\
+        #!/bin/bash
+
+        apt update
+        apt-get install -y libgl1
+        """
+        ),
+    )
+
+    return task
 
 
 def get_config(
         default: str = "./configs/base_config.yml"
-) -> DictConfig:
+) -> Tuple[DictConfig, TaskInstance]:
     """Parses command-line arguments and reads a configuration file.
 
     Args:
@@ -63,7 +99,10 @@ def get_config(
     config["dataset_hash"] = args.dataset_hash
 
     config = OmegaConf.create(config)
-    return config
+
+    task = set_clearml_task(config)
+
+    return config, task
 
 
 def get_device(cfg: DictConfig) -> torch.device:
@@ -197,3 +236,13 @@ def load_file(
         return load_json(path2load)
     else:
         return pd.read_csv(path2load)
+
+
+def make_target_mask(image, text_polys):
+    heght, width = image.shape[:2]
+    mask = np.zeros((heght, width), dtype=np.float32)
+    for i in range(len(text_polys)):
+        polygon = text_polys[i]
+        cv2.fillPoly(mask, [polygon.astype(np.int32)], 1)
+
+    return mask

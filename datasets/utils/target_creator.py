@@ -8,6 +8,7 @@ class TargetCreator:
         self.mask_shrinker = MakeShrinkMap(**mask_shrinker_cfg)
 
     def create_target(self, image, word_polygons):
+
         res = self.mask_shrinker({
             'img': image,
             'text_polys': word_polygons,

@@ -1,221 +1,257 @@
 import cv2
 import pyclipper
 
-from shapely.geometry import Polygon
-
-import pandas as pd
 import numpy as np
-from terminaltables import AsciiTable
-from utils.mean_precision_recall_fscore import mean_precision_recall_fscore_support
-from typing import List, Union, Dict
+import torch.nn as nn
+
+from PIL import Image
+from typing import List, Union, Dict, Tuple
+from utils.types import SegmentationMaskResult, FieldMask, RotationCls
 
 
-class SegPostprocessing:
-    def __init__(self, binarization_threshold=0.3, confidence_threshold=0.7, unclip_ratio=1.5, min_area=10.):
-        self.binarization_threshold = binarization_threshold
+def sigmoid(x):
+    return 1 / (1 + np.exp(-x))
+
+
+def roll_top_left_first(coords: np.array) -> np.array:
+    for _ in range(4):
+        distances = np.linalg.norm(coords, 2, axis=1)
+        is_first = np.argmin(distances) == 0
+
+        if is_first:
+            break
+        coords = np.roll(coords, 1, 0)
+    else:
+        raise Exception("Failed to find correct sort")
+    return coords
+
+
+def rotate_bbox(bbox: np.ndarray,
+                rotation_matrix: np.ndarray) -> np.ndarray:
+    """
+    Rotate bbox using rotation_matrix
+
+    Args:
+      bbox: bbox in Quadrangle type coords format
+      rotation_matrix: opencv rotation matrix
+    """
+    bbox = np.array(bbox).reshape((-1, 1, 2))
+    bbox = cv2.transform(bbox, rotation_matrix)
+    return np.squeeze(bbox)
+
+
+def align_coords(boxes: List[np.ndarray]) -> np.ndarray:
+    """
+    Estimate mean rotation angle(MRA) for all bboxes. MRA is a mean of rotation
+    angles weighted by individual bbox area when taking mean.
+
+    Args:
+      boxes: list of boxes in Quadrangle type coords format
+    Return:
+       aligned_boxes:  array of all boxes rotated by MRA
+    """
+    aligned_boxes = np.zeros(shape=(len(boxes), 4, 2), dtype=np.int32)
+    all_theta = []
+    all_area = []
+    for point in boxes:
+        _, (w, h), theta = cv2.minAreaRect(point)
+        if theta >= 45:
+            theta -= 90
+        all_theta.append(theta)
+        all_area.append(w * h)
+    theta = np.average(all_theta,
+                       weights=all_area)
+    rotation_matrix = cv2.getRotationMatrix2D((0, 0), theta, 1.0)
+    for i, box in enumerate(boxes):
+        aligned_boxes[i] = rotate_bbox(box, rotation_matrix)
+    return aligned_boxes
+
+
+def sort_bboxes(boxes: List[np.ndarray],
+                intersection_threshold: float = 0.5) -> List[List[int]]:
+    """
+    Sort word bboxes in natural reading order
+
+    Args:
+        boxes: list of boxes in Quadrangle type coords format
+        intersection_threshold: bboxes intersection threshold on vertical axis to assume they are on the same line
+    Notes:
+        intersection_threshold values closer to 0 work better for cases of rotated bboxes and if text
+        jumps all over the line.
+        Values closer to 1 work better if bboxes in one line are aligned and have no rotation.
+    Returns:
+        sorted_boxes: list of sorted word boxes
+        sorted_ids: list of index boxes after sorting
+
+    """
+
+    if not boxes:
+        return [[]]
+
+    if len(boxes) == 1:
+        return [[0]]
+
+    boxes = np.array(boxes)
+    indices = np.arange(len(boxes))  # [ 0,1,2, ...]
+    aligned_boxes = align_coords(boxes)
+    # sort by center y, height of normalized boxes
+    # cv2.minAreaRect returns ((cx,cy),(w,h),theta)
+    indices = np.asarray(sorted(indices, key=lambda i: (cv2.minAreaRect(aligned_boxes[i])[0][1],
+                                                        cv2.minAreaRect(aligned_boxes[i])[1][1])))
+
+    y1 = aligned_boxes[:, :, 1].min(axis=1)  # top left
+    y2 = aligned_boxes[:, :, 1].max(axis=1)  # bottom right
+    heights = y2 - y1
+
+    sorted_boxes = []
+    sorted_ids = []
+
+    while indices.size:
+
+        idx = indices[0]
+        buffer_merge_ids = [idx]
+        indices = indices[1:]
+        # ndarray of shape : (len(indices),)
+        max_y1 = np.maximum(y1[idx], y1[indices])
+        min_y2 = np.minimum(y2[idx], y2[indices])
+        intersection_height = np.maximum(0.0, min_y2 - max_y1)
+        overlap = intersection_height / heights[idx]
+
+        for idx in indices[overlap >= intersection_threshold]:
+            buffer_merge_ids.append(idx)
+        # sort boxes that are on the same line in the left corner
+        buffer_merge_ids = sorted(buffer_merge_ids, key=lambda i: boxes[i][0][0])
+        sorted_ids.append(buffer_merge_ids)
+        sorted_boxes.extend(boxes[buffer_merge_ids])
+        # filter from overlap boxes
+        indices = indices[overlap < intersection_threshold]
+
+    return sorted_ids
+
+
+class FullTextPostProcessor:
+    def __init__(self, shrink_ratio, intersection_threshold, confidence_threshold, binarization_threshold, min_area):
+        self.shrink_ratio = shrink_ratio
+        self.intersection_threshold = intersection_threshold
         self.confidence_threshold = confidence_threshold
-        self.unclip_ratio = unclip_ratio
+        self.binarization_threshold = binarization_threshold
         self.min_area = min_area
 
-    def __call__(self, width, height, pred, return_polygon=False):
-        '''
-        batch: (image, polygons, ignore_tags
-        batch: a dict produced by dataloaders.
-            image: tensor of shape (N, C, H, W).
-            polygons: tensor of shape (N, K, 4, 2), the polygons of objective regions.
-            ignore_tags: tensor of shape (N, K), indicates whether a region is ignorable or not.
-            shape: the original shape of images.
-            filename: the original filenames of images.
-        pred:
-            binary: text region segmentation map, with shape (N, H, W)
-            thresh: [if exists] thresh hold prediction with shape (N, H, W)
-            thresh_binary: [if exists] binarized with threshhold, (N, H, W)
-        '''
-        pred = pred[:, 0, :, :]
-        segmentation = self.binarize(pred)
-        boxes_batch = []
-        scores_batch = []
-        for batch_index in range(pred.size(0)):
-            if return_polygon:
-                boxes, scores = self.polygons_from_bitmap(pred[batch_index], segmentation[batch_index], width, height)
-            else:
-                boxes, scores = self.boxes_from_bitmap(pred[batch_index], segmentation[batch_index], width, height)
-            boxes_batch.append(boxes)
-            scores_batch.append(scores)
-        return boxes_batch, scores_batch
+    def find_word_boxes(self,
+                        mask: np.ndarray,
+                        scale_factors: Tuple[float, float]):
 
-    def binarize(self, pred):
-        return pred > self.binarization_threshold
-
-    def polygons_from_bitmap(self, pred, _bitmap, dest_width, dest_height):
-        '''
-        _bitmap: single map with shape (H, W),
-            whose values are binarized as {0, 1}
-        '''
-
-        assert len(_bitmap.shape) == 2
-        bitmap = _bitmap.cpu().numpy()  # The first channel
-        pred = pred.cpu().detach().numpy()
-        height, width = bitmap.shape
         boxes = []
-        scores = []
+        confidences = []
+        heights = []
 
-        contours, _ = cv2.findContours((bitmap * 255).astype(np.uint8), cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+        height, width = mask.shape[:2]
+        scale = 1 * 10e-6 * height * width
 
-        contours = [c for c in contours if cv2.contourArea(c) > self.min_area]
+        n_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=4)
+        for label_id in range(n_labels):
+            x1 = stats[label_id, cv2.CC_STAT_LEFT]
+            y1 = stats[label_id, cv2.CC_STAT_TOP]
+            w = stats[label_id, cv2.CC_STAT_WIDTH]
+            h = stats[label_id, cv2.CC_STAT_HEIGHT]
+            area = stats[label_id, cv2.CC_STAT_AREA]
+            x2, y2 = x1 + w, y1 + h
+            confidence = mask[y1:y2 + 1, x1:x2 + 1].mean() / 255.
 
-        for contour in contours:
-            epsilon = 0.005 * cv2.arcLength(contour, True)
-            approx = cv2.approxPolyDP(contour, epsilon, True)
-            points = approx.reshape((-1, 2))
-            if points.shape[0] < 4:
-                continue
-            score = self.box_score_fast(pred, contour.squeeze(1))
-            if score < self.confidence_threshold:
-                continue
-
-            if points.shape[0] > 2:
-                curr_boxes = self.unclip(points, unclip_ratio=self.unclip_ratio)
-                if len(curr_boxes) == 0:
-                    continue
-                else:
-                    for box in curr_boxes:
-                        box = np.array(box).reshape(-1, 2)
-
-                        if not isinstance(dest_width, int):
-                            dest_width = dest_width.item()
-                            dest_height = dest_height.item()
-
-                        box[:, 0] = np.clip(np.round(box[:, 0] / width * dest_width), 0, dest_width)
-                        box[:, 1] = np.clip(np.round(box[:, 1] / height * dest_height), 0, dest_height)
-                        boxes.append(box)
-                        scores.append(score)
-
-        return boxes, scores
-
-    def boxes_from_bitmap(self, pred, _bitmap, dest_width, dest_height):
-        '''
-        _bitmap: single map with shape (H, W),
-            whose values are binarized as {0, 1}
-        '''
-
-        assert len(_bitmap.shape) == 2
-        bitmap = _bitmap.cpu().numpy()  # The first channel
-        pred = pred.cpu().detach().numpy()
-        height, width = bitmap.shape
-        contours, _ = cv2.findContours((bitmap * 255).astype(np.uint8), cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-
-        contours = [c for c in contours if cv2.contourArea(c) > self.min_area]
-
-        num_contours = len(contours)
-        boxes = []
-        scores = []
-
-        for index in range(num_contours):
-            contour = contours[index].squeeze(1)
-
-            score = self.box_score_fast(pred, contour)
-            if score < self.confidence_threshold:
+            if area < self.min_area:
                 continue
 
-            points, sside = self.get_mini_boxes(contour)
-            points = np.array(points)
-            box = self.unclip(points, unclip_ratio=self.unclip_ratio).reshape(-1, 1, 2)
-
-            if len(box) < 1:
+            if confidence < self.confidence_threshold:
                 continue
 
-            box, sside = self.get_mini_boxes(box)
-            box = np.array(box)
-            if not isinstance(dest_width, int):
-                dest_width = dest_width.item()
-                dest_height = dest_height.item()
+            if w * h < scale:
+                continue
 
-            box[:, 0] = np.clip(np.round(box[:, 0] / width * dest_width), 0, dest_width)
-            box[:, 1] = np.clip(np.round(box[:, 1] / height * dest_height), 0, dest_height)
+            contours, _ = cv2.findContours((labels[y1:y2 + 1, x1:x2 + 1] == label_id).astype(np.uint8),
+                                           cv2.RETR_EXTERNAL,
+                                           cv2.CHAIN_APPROX_SIMPLE)
+
+            epsilon = 0.001 * cv2.arcLength(contours[0], True)
+            approx = cv2.approxPolyDP(contours[0], epsilon, True)
+            contours = self.extend_box(approx)
+
+            if len(contours) < 4:
+                continue
+
+            oriented_rect = cv2.minAreaRect(contours)
+
+            w, h = oriented_rect[1]
+
+            rect = cv2.boxPoints(oriented_rect)
+            rect[:, 0] += x1
+            rect[:, 1] += y1
+            rect = roll_top_left_first(rect)
+            rect[:, 0] *= scale_factors[0]
+            rect[:, 1] *= scale_factors[1]
+            box = rect.round().astype('int32')
             boxes.append(box)
-            scores.append(score)
-        return boxes, scores
+            confidences.append(confidence)
 
-    def unclip(self, box, unclip_ratio=1):
-        poly = Polygon(box)
-        distance = poly.area * unclip_ratio / poly.length
-        offset = pyclipper.PyclipperOffset()
-        offset.AddPath(box, pyclipper.JT_ROUND, pyclipper.ET_CLOSEDPOLYGON)
-        expanded = offset.Execute(distance)
-        return expanded
+            if abs(oriented_rect[-1]) >= 45:
+                w, h = h, w
+            heights.append(h)
 
-    def get_mini_boxes(self, contour):
-        bounding_box = cv2.minAreaRect(contour)
-        points = sorted(list(cv2.boxPoints(bounding_box)), key=lambda x: x[0])
+        boxes = np.array(boxes)
+        confidences = np.array(confidences)
+        heights = np.array(heights)
+        median_h = np.median(heights)
+        boxes = boxes[heights < 2. * median_h]
+        confidences = confidences[heights < 2. * median_h]
 
-        index_1, index_2, index_3, index_4 = 0, 1, 2, 3
-        if points[1][1] > points[0][1]:
-            index_1 = 0
-            index_4 = 1
-        else:
-            index_1 = 1
-            index_4 = 0
-        if points[3][1] > points[2][1]:
-            index_2 = 2
-            index_3 = 3
-        else:
-            index_2 = 3
-            index_3 = 2
+        return boxes.tolist(), confidences.tolist()
 
-        box = [points[index_1], points[index_2], points[index_3], points[index_4]]
-        return box, min(bounding_box[1])
+    def get_distance(self,
+                     polygon: np.ndarray, ) -> float:
+        """
+        """
+        area = cv2.contourArea(polygon)
+        perimeter = cv2.arcLength(polygon, True)
+        distance = area * self.shrink_ratio / perimeter
+        return distance
 
-    def box_score_fast(self, bitmap, _box):
-        h, w = bitmap.shape[:2]
-        box = _box.copy()
-        xmin = np.clip(np.floor(box[:, 0].min()).astype(np.int32), 0, w - 1)
-        xmax = np.clip(np.ceil(box[:, 0].max()).astype(np.int32), 0, w - 1)
-        ymin = np.clip(np.floor(box[:, 1].min()).astype(np.int32), 0, h - 1)
-        ymax = np.clip(np.ceil(box[:, 1].max()).astype(np.int32), 0, h - 1)
+    def extend_box(self,
+                   box: np.ndarray) -> np.ndarray:
+        subject = [tuple(p[0]) for p in box]
+        padding = pyclipper.PyclipperOffset()
+        padding.AddPath(subject,
+                        pyclipper.JT_ROUND,
+                        pyclipper.ET_CLOSEDPOLYGON)
+        extend_polygon = padding.Execute(self.get_distance(box))
+        if extend_polygon:
+            extend_polygon = extend_polygon[0]
+        return np.array(extend_polygon)
 
-        mask = np.zeros((ymax - ymin + 1, xmax - xmin + 1), dtype=np.uint8)
-        box[:, 0] = box[:, 0] - xmin
-        box[:, 1] = box[:, 1] - ymin
-        cv2.fillPoly(mask, box.reshape(1, -1, 2).astype(np.int32), 1)
-        return cv2.mean(bitmap[ymin:ymax + 1, xmin:xmax + 1], mask)[0]
+    def run(self,
+            args: SegmentationMaskResult
+            ) -> List[FieldMask]:
 
+        x1, y1, x2, y2 = args.coords
 
-class Evaluator(object):
-    def __init__(self,):
-        self.result = {
-        'mean_precision': 0,
-        'mean_recall': 0,
-        'mean_fscore': 0,
-        'mean_support': 0,
-        'iou_thresholds': 0,
-        'precisions': 0,
-        'recalls': 0,
-        'fscores': 0
-    }
+        prediction_labels = args.prediction_labels[y1:y2 + 1, x1:x2 + 1]
+        prediction_labels = prediction_labels.detach().cpu().numpy() > self.binarization_threshold
+        prediction_labels = prediction_labels.astype(np.uint8)
+        boxes, confidences = self.find_word_boxes(prediction_labels, args.scale)
 
-    def __call__(self, gt_polygons, pred_polygons):
-        # mean precision recall fscore
-        out = []
-        for gt_p, pred_p in zip(gt_polygons, pred_polygons):
-            out.append(mean_precision_recall_fscore_support(gt_p, pred_p))
+        sorted_boxes = []
+        sorted_ids = sort_bboxes(boxes, self.intersection_threshold)
+        for idx in sum(sorted_ids, []):
+            box = boxes[idx]
+            confidence = confidences[idx]
+            sorted_boxes.append(FieldMask(
+                coords=(tuple(box[0]),
+                        tuple(box[1]),
+                        tuple(box[2]),
+                        tuple(box[3])),
+                confidence=confidence,
+                rotation_cls=RotationCls.deg0)
+            )
 
-        current_result = {
-            'mean_precision': np.mean([o['mean_precision'] for o in out]),
-            'mean_recall': np.mean([o['mean_recall'] for o in out]),
-            'mean_fscore': np.mean([o['mean_fscore'] for o in out]),
-            'mean_support': np.mean([o['support'] for o in out]),
-            'iou_thresholds': out[0]['iou_thresholds'],
-            'precisions': np.mean(np.stack([o['precisions'] for o in out]), axis=0),
-            'recalls': np.mean(np.stack([o['recalls'] for o in out]), axis=0),
-            'fscores': np.mean(np.stack([o['fscores'] for o in out]), axis=0)
-        }
-        for k, v in current_result.items():
-            self.result[k]+=v
-
-    def clear_data(self):
-        for k, v in self.result.items():
-            self.result[k] = 0
+        return sorted_boxes
 
 
 def show_metrics(
@@ -240,12 +276,19 @@ def show_metrics(
     del ap_table
 
 
-def draw_polygons(img, polygons, contours=False):
+def draw_polygons(img: np.ndarray, polygons: List[np.ndarray]):
     img = img.copy()
     for p in polygons:
         p = np.array([p]).astype(np.int32)
-        if contours:
-            cv2.drawContours(img, p, -1, (0, 255, 0), 3)
-        else:
-            cv2.fillPoly(img, p, (0, 255, 0))
-    return img
+        cv2.drawContours(img, p, -1, (0, 255, 0), 3)
+    return Image.fromarray(img)
+#
+# def draw_polygons(img, polygons, contours=False):
+#     img = img.copy()
+#     for p in polygons:
+#         p = np.array([p]).astype(np.int32)
+#         if contours:
+#             cv2.drawContours(img, p, -1, (0, 255, 0), 3)
+#         else:
+#             cv2.fillPoly(img, p, (0, 255, 0))
+#     return Image.fromarray(img)
