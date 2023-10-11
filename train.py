@@ -1,3 +1,5 @@
+import cv2
+
 import numpy as np
 import torch.distributed as dist
 import pandas as pd
@@ -18,6 +20,8 @@ from optimizers import get_optimizer_and_scheduler
 from datasets import get_dataset, get_dataloader
 from models import get_model
 from utils.types import ImageResizerResult, SegmentationMaskResult
+from utils.tools import save_json
+from utils.metrics import draw_polygons
 
 
 class Trainer:
@@ -69,12 +73,12 @@ class Trainer:
     """
     def __init__(
             self,
-            config: DictConfig
+            config: DictConfig,
+            logger: Logger
     ):
-        self.config = config
 
-        # Init Logger
-        self.logger = Logger(self.config)
+        self.config = config
+        self.logger = logger
 
         # Init base train element
         self.device = get_device(config)
@@ -102,10 +106,15 @@ class Trainer:
             config["description"]["experiment_name"]
         )
         os.makedirs(self.save_best_folder, exist_ok=True)
+
         self.best_checkpoints = list()
 
         # Set metric
         self.best_score = 0
+
+        # Set metric
+        self.best_hmean = 0
+
         # Set Evaluator
         self.postprocessor = FullTextPostProcessor(**config['post_processor']['params'])
 
@@ -166,7 +175,7 @@ class Trainer:
             self.optimizer.zero_grad(set_to_none=True)
 
             # Forward step
-            out, loss_inp = self._forward_step(self.model, batch)
+            out, loss_inp, image_instances, target_polys = self._forward_step(self.model, batch)
 
             # Calculate loss
 
@@ -184,7 +193,7 @@ class Trainer:
             train_loss += batch_loss
 
             # Log batch loss
-            self.logger.log_batch_loss(batch_loss, 'train', iter_done)
+            self.logger.log_scalar(batch_loss, 'train', iter_done)
 
             # Set loss value for loop
             loop.set_postfix({"loss": float(train_loss / (i+1))})
@@ -202,14 +211,15 @@ class Trainer:
             print(f"train loss - {train_loss}")
 
         # Log epoch loss to Tensorboard and MlFlow
-        self.logger.log_epoch_loss(
+        self.logger.log_scalar(
             train_loss.detach().cpu().item(),
             'train',
             self.current_epoch
         )
 
-        self.logger.log_lr(
+        self.logger.log_scalar(
             self.optimizer.param_groups[0]['lr'],
+            'lr',
             self.current_epoch
         )
 
@@ -250,6 +260,12 @@ class Trainer:
             polys.append(bboxes)
 
         return polys
+
+    def save_image(self, instance, predict):
+        image = instance.image
+        image = image.astype(np.uint8)
+        image = draw_polygons(image, predict)
+        self.logger.report_image(image, 'Predict polys', 'Text', self.current_epoch)
 
     def evaluate(
             self,
@@ -308,14 +324,32 @@ class Trainer:
                 # Set loss value for loop
                 loop.set_postfix({"loss": float(self.eval_loss / (i+1))})
 
+                self.precision += precision
+                self.recall += recall
+
                 predict_polys = self.get_polys(preds, image_instances)
 
+                curr_hmean = []
+                curr_precision_iou = []
+                curr_recall_iou = []
                 for target, predict, instance in zip(target_polys, predict_polys, image_instances):
+                    if i == 0:
+                        #self.save_image(instance, predict)
+                        pass
+
                     metric = HmeanIOUMetric(target, predict)
-                    # self.save_image(hmean, instance, predict)
-                    hmean.append(metric['hmean'])
-                    precision.append(metric['precision'])
-                    recall.append(metric['recall'])
+
+                    curr_hmean.append(metric['hmean'])
+                    curr_precision_iou.append(metric['precision'])
+                    curr_recall_iou.append(metric['recall'])
+
+                self.hmean += np.mean(curr_hmean)
+                self.precision_iou += np.mean(curr_precision_iou)
+                self.recall_iou += np.mean(curr_recall_iou)
+
+            self.hmean /= (i + 1)
+            self.precision_iou /= (i + 1)
+            self.recall_iou /= (i + 1)
 
             self.precision /= (i + 1)
             self.recall /= (i + 1)
@@ -323,25 +357,33 @@ class Trainer:
 
             # Print mean train loss
             self.eval_loss = self.eval_loss / len(loader)
+
             print(f"evaluate loss - {self.eval_loss}")
             print(f"PRECISION - {self.precision}")
             print(f"RECALL - {self.recall}")
             print(f"F1_SCORE - {self.f1_score}")
+            print(f"H-mean - {self.hmean}")
+            print(f"Precision_IoU - {self.precision_iou}")
+            print(f"Recall_IoU - {self.recall_iou}")
+
 
         # Log epoch loss to Tensorboard and MlFlow
-        self.logger.log_epoch_loss(
+        self.logger.log_scalar(
             self.eval_loss.item(),
             'val',
             self.current_epoch
         )
 
-        metrics = [self.f1_score.item(), self.precision.item(), self.recall.item()]
-        metrics_name = ['F1', 'precision', 'recall']
-
-        self.logger.log_epoch_metrics(
-            metrics,
-            metrics_name,
-            self.current_epoch
+        self.logger.write_metrics(
+            metrics = {
+                'H-mean': {'text': self.hmean.item()},
+                'Precision_IoU': {'text': self.precision_iou.item()},
+                'Recall_IoU': {'text': self.recall_iou.item()},
+                'Precision': {'text': self.precision.item()},
+                'Recall': {'text': self.recall.item()},
+                'F1_score': {'text': self.f1_score.item()},
+            },
+            step=self.current_epoch
         )
 
     def _forward_step(
@@ -412,14 +454,38 @@ class Trainer:
 
         # Check both metrics
         if self.f1_score > self.best_score:
-            print("Saving best model ...")
+            print("Saving best model by f1...")
             self.best_score = self.f1_score.detach().cpu().item()
             # Create path to best result
             path2best_weight = os.path.join(
                 self.save_best_folder,
                 f"{self.config['description']['experiment_name']}_score_{self.best_score}.pth"
             )
+            # Save model
+            torch.save(model.state_dict(), path2best_weight)
+            # Append current best checkpoint path to the list
+            self.best_checkpoints.append(path2best_weight)
 
+            # Logic for holding best K checkpoint
+            if len(self.best_checkpoints) > self.config["checkpoint"]['average_top_k']:
+                self.best_checkpoints.pop(0)
+
+            # Save list with paths to best checkpoints
+            path2best_checkpoints = os.path.join(self.save_best_folder, 'top_checkpoints.json')
+
+            save_json(
+                self.best_checkpoints,
+                path2best_checkpoints
+            )
+
+        if self.hmean > self.best_hmean:
+            print("Saving best model by hmean ...")
+            self.best_hmean = self.hmean.detach().cpu().item()
+            # Create path to best result
+            path2best_weight = os.path.join(
+                self.save_best_folder,
+                f"{self.config['description']['experiment_name']}_score_{self.best_hmean}.pth"
+            )
             # Save model
             torch.save(model.state_dict(), path2best_weight)
             # Append current best checkpoint path to the list
@@ -470,9 +536,11 @@ class Trainer:
 
 
 if __name__ == "__main__":
-    from utils.tools import set_random_seed, get_config, save_json
+    from utils.tools import set_random_seed, get_config
+
     set_random_seed()
 
     config, task = get_config()
-    trainer = Trainer(config)
+    logger = Logger(config['tensorboard']['log_dir'], task)
+    trainer = Trainer(config, logger)
     trainer.train()

@@ -106,6 +106,7 @@ class TextDetPervichka(
 
     def __getitem__(self, idx):
         image, targets, polys = self.load_sample(idx)
+        or_image = image.copy()
 
         targets = targets.transpose(1, 2, 0)
 
@@ -134,6 +135,8 @@ class TextDetPervichka(
         shrink_masks = torch.as_tensor(shrink_masks)
         threshold_maps = torch.as_tensor(threshold_maps)
         threshold_masks = torch.as_tensor(threshold_masks)
+
+        image_instance.image = or_image
 
         out = dict(
             image=image,

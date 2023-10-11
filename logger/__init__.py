@@ -1,3 +1,3 @@
-from logger.wrapper import Logger
+from logger.logger import Logger
 
 __all__ = [Logger]

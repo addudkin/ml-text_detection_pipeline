@@ -153,7 +153,8 @@ def tracing_weights(
 
 
 if __name__ == '__main__':
-    config = get_config()
+    config, task = get_config()
+
 
     path2weights = os.path.join(
         os.getcwd(),

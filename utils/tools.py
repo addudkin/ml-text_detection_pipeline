@@ -100,7 +100,10 @@ def get_config(
 
     config = OmegaConf.create(config)
 
-    task = set_clearml_task(config)
+    task = None
+
+    if config['init_cleaml']:
+        task = set_clearml_task(config)
 
     return config, task
 

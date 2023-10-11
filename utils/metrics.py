@@ -173,7 +173,12 @@ class FullTextPostProcessor:
 
             epsilon = 0.001 * cv2.arcLength(contours[0], True)
             approx = cv2.approxPolyDP(contours[0], epsilon, True)
-            contours = self.extend_box(approx)
+            # TODO: Странно поведение, иногда падает с ошибкой
+            try:
+                contours = self.extend_box(approx)
+            except:
+                print('self.extend_box failed')
+                continue
 
             if len(contours) < 4:
                 continue
@@ -280,7 +285,7 @@ def draw_polygons(img: np.ndarray, polygons: List[np.ndarray]):
     img = img.copy()
     for p in polygons:
         p = np.array([p]).astype(np.int32)
-        cv2.drawContours(img, p, -1, (0, 255, 0), 3)
+        cv2.drawContours(img, p, -1, (0, 255, 0), 1)
     return Image.fromarray(img)
 #
 # def draw_polygons(img, polygons, contours=False):

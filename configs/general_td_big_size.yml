@@ -1,10 +1,11 @@
 description:
   repo: TD
-  project_name: General_td
-  experiment_name: 2048_size_shrink05
-  dataset_id: f2e2f21f37f843d4bf8f58fd63343ac5
+  project_name: "Experiments: FullText TD"
+  experiment_name: baseline
+  dataset_id: c2ae1558fdbe435abf3f468b22908277
   gt_dataset_id: 51f0e2ca239846cd9421fb5a5c8b49ee
 
+init_cleaml: False
 mlflow: null # если не требуется, то просто убираем этот блок
 #  # exp_name - в таком видео в mlflow будет отображаться эксперимент
 #  exp_name: ${description.repo}/${description.project_name}/${description.experiment_name}
@@ -19,8 +20,8 @@ tensorboard:
 data:
   datasets:
     pervichka:
-      images_folder: /home/addudkin/ml-text_detection_pipeline/data/ruinvoices/images
-      annotation_folder: /home/addudkin/ml-text_detection_pipeline/data/ruinvoices
+      images_folder: /home/addudkin/ml-text_detection_pipeline/data
+      annotation_folder: /home/addudkin/ml-text_detection_pipeline/data
       p: 1.0
   sample_name:
     train: train_annotation.json
@@ -30,7 +31,7 @@ data:
 
 
 data_preprocess:
-  data_folder: /home/addudkin/ml-text_detection_pipeline/data/ruinvoices/prepared_mask_shrink05
+  data_folder: /home/addudkin/ml-text_detection_pipeline/data_prepared_mask/
   augmentation:
     OneOf:
       p: 0.5
@@ -40,12 +41,11 @@ data_preprocess:
         - LightingGradientTransform:
             p: 1.0
 
-
 train:
-  epoch: 1000
+  epoch: 100
   image_size: [2048, 2048]
-  batch_size: 8
-  workers: 12
+  batch_size: 32
+  workers: 8
   pin_memory: True
   gpu_index: 0
 

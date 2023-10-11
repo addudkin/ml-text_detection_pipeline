@@ -38,7 +38,6 @@ data_preprocess:
         - LightingGradientTransform:
             p: 1.0
 
-
 train:
   epoch: 1000
   image_size: [1024, 896]

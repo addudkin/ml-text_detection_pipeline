@@ -1,4 +1,6 @@
 import os
+import random
+
 import torch
 import cv2
 import numpy as np
@@ -68,7 +70,7 @@ class GTEvaluater(Trainer):
         image = instance.image
         image = image.astype(np.uint8)
         image = draw_polygons(image, predict)
-        name = f"data/gt_metrics/{metric['hmean']}.png"
+        name = f"viz/{random.randint(0, 100000)}_{metric['hmean']}.png"
         image.save(name)
 
     def get_polys(self, prediction, image_instances):
@@ -134,14 +136,23 @@ class GTEvaluater(Trainer):
 
                 for target, predict, instance in zip(text_polys, predict_polys, image_instances):
                     metric = HmeanIOUMetric(target, predict)
-                    # self.save_image(hmean, instance, predict)
-                    hmean.append(metric['hmean'])
-                    precision.append(metric['precision'])
-                    recall.append(metric['recall'])
+                    self.save_image(metric, instance, predict)
+                    hmean.append(np.float32(metric['hmean']))
+                    precision.append(np.float32(metric['precision']))
+                    recall.append(np.float32(metric['recall']))
+                    print(metric['hmean'], metric['precision'], metric['recall'])
 
-        print(f'Средний hmean' - np.mean(hmean))
-        print(f'Средний precision' - np.mean(precision))
-        print(f'Средний recall' - np.mean(recall))
+
+        print(hmean)
+        print(precision)
+        print(recall)
+        hmean = [np.float32(i) for i in hmean]
+        precision = [np.float32(i) for i in precision]
+        recall = [np.float32(i) for i in recall]
+
+        print('Средний hmean',  np.mean(hmean))
+        print('Средний precision',  np.mean(precision))
+        print('Средний recall',  np.mean(recall))
 
 
 

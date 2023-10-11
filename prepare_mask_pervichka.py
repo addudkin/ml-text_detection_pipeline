@@ -192,13 +192,13 @@ def process_single_sample(event: Tuple) -> Tuple[str, str, str]:
     image, polygons = resize_if_needed(image, image_polygons, max_size=2048)
 
     # Apply augmentations
-    # image = apply_augmentation(image, augmentation=augmentation_pipline)
+    image = apply_augmentation(image, augmentation=augmentation_pipline)
 
     # Get targets
     targets = get_masks(target_func, image, polygons)
 
     # Create new name and add into new annotation
-    file_name, _ = os.path.splitext(image_name)
+    file_name = os.path.basename(image_name)
     new_image_name = f'{file_name}_image.npy'
     new_target_name = f'{file_name}_targets.npy'
     new_polys_name = f'{file_name}_polys.pkl'
@@ -214,7 +214,7 @@ def process_single_sample(event: Tuple) -> Tuple[str, str, str]:
         os.path.join(save_dirs[split], new_target_name)
     )
 
-    pickle_dumb(image_polygons, os.path.join(save_dirs[split], new_polys_name))
+    pickle_dumb(polygons, os.path.join(save_dirs[split], new_polys_name))
 
     return new_image_name, new_target_name, new_polys_name
 
